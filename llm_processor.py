@@ -118,14 +118,16 @@ class LLMProcessor:
 
         # 使用新 google-genai API，模型名稱需要 "models/" 前綴
         model_name_full = "models/gemini-1.5-flash"
+        self.api_key = resolved_key
 
         # 建立一個兼容層：GenaiModelWrapper
         class GenaiModelWrapper:
-            def __init__(self, genai_mod, client_obj, model_name, system_instruction):
+            def __init__(self, genai_mod, client_obj, model_name, system_instruction, api_key):
                 self.genai = genai_mod
                 self.client = client_obj
                 self.model_name = model_name
                 self.system_instruction = system_instruction
+                self.api_key = api_key
 
                 # 嘗試建立一個原生 model instance（若可用）
                 self.native_model = None
@@ -144,7 +146,8 @@ class LLMProcessor:
                         if client_obj is not None:
                             kwargs["client"] = client_obj
                         self.native_model = self.genai.GenerativeModel(**kwargs)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to create native GenerativeModel: {e}")
                     self.native_model = None
 
             def _unwrap_text(self, resp):
@@ -192,8 +195,8 @@ class LLMProcessor:
                 if self.native_model is not None and hasattr(self.native_model, "generate_content"):
                     try:
                         return self.native_model.generate_content(prompt)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Native GenerativeModel.generate_content failed: {e}")
 
                 # 2) client-level calls (嘗試多種可能的方法名)
                 c = self.client or self.genai
@@ -218,28 +221,46 @@ class LLMProcessor:
                             r = R()
                             r.text = text
                             return r
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Method {method_name} failed: {e}")
                         continue
 
-                # 3) 最後嘗試直接呼叫 genai API 的任何可用入口，然後以字串回傳
+                # 3) REST API 回退 (使用 Gemini API REST endpoint)
                 try:
-                    resp = None
-                    if hasattr(self.genai, "generate"):
-                        resp = self.genai.generate(model=self.model_name, prompt=prompt)
-                    elif hasattr(self.genai, "generate_text"):
-                        resp = self.genai.generate_text(model=self.model_name, prompt=prompt)
+                    import requests
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
+                    payload_json = {
+                        "systemInstruction": {"parts": [{"text": self.system_instruction}]},
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {
+                            "responseMimeType": "application/json",
+                            "temperature": 0.1,
+                            "maxOutputTokens": 8192
+                        }
+                    }
+                    headers = {"Content-Type": "application/json"}
+                    response = requests.post(url, json=payload_json, headers=headers, timeout=30)
+                    if response.status_code == 200:
+                        resp_json = response.json()
+                        if "candidates" in resp_json and len(resp_json["candidates"]) > 0:
+                            content = resp_json["candidates"][0].get("content", {})
+                            if "parts" in content and len(content["parts"]) > 0:
+                                text = content["parts"][0].get("text", "")
+                                class R: pass
+                                r = R()
+                                r.text = text
+                                return r
                     else:
-                        raise RuntimeError("No supported generate method found on google.genai module")
-                    text = self._unwrap_text(resp)
-                    class R: pass
-                    r = R()
-                    r.text = text
-                    return r
+                        logger.debug(f"REST API returned status {response.status_code}: {response.text[:200]}")
                 except Exception as e:
-                    raise RuntimeError(f"GenAI invocation failed: {e}") from e
+                    logger.debug(f"REST API fallback failed: {e}")
+
+                # 4) 若所有方法都失敗，記錄可用屬性並拋出異常
+                available_attrs = [attr for attr in dir(self.genai) if not attr.startswith("_")]
+                raise RuntimeError(f"No supported generate method found. Available attributes: {available_attrs[:10]}")
 
         # 建立 wrapper 實例供後續呼叫
-        self.model = GenaiModelWrapper(genai, client, model_name_full, SYSTEM_PROMPT)
+        self.model = GenaiModelWrapper(genai, client, model_name_full, SYSTEM_PROMPT, resolved_key)
         logger.info(f"LLMProcessor initialized with Gemini 1.5 Flash model")
 
     def process_ocr_texts(self, ocr_texts: List[str]) -> Dict[str, Any]:

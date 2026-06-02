@@ -106,73 +106,86 @@ class LLMProcessor:
         user_prompt = "以下是由 PaddleOCR 傳入的發票原始文字陣列，請依上述規則進行結構化：\n" + ocr_block
 
         logger.info(
-            f"Sending {len(ocr_texts)} OCR text blocks to Gemini 1.5 Flash via REST API..."
+            f"Sending {len(ocr_texts)} OCR text blocks to Gemini via REST API..."
         )
         
-        # 強制將 API Key 直接綁在 URL 參數上，完全避開 SDK 的標頭誤判 Bug
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
-        
-        headers = {
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "systemInstruction": {
-                "parts": [{"text": SYSTEM_PROMPT}]
-            },
-            "contents": [
-                {"parts": [{"text": user_prompt}]}
-            ],
-            "generationConfig": {
-                "temperature": 0.1,
-                "responseMimeType": "application/json"
-            }
-        }
+        # 嘗試多個 API 版本和模型名稱
+        api_configs = [
+            ("v1", "gemini-1.5-flash"),
+            ("v1beta", "gemini-1.5-flash"),
+            ("v1", "gemini-pro"),
+            ("v1", "gemini-2.0-flash"),
+        ]
         
         response_text = ""
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
-            
-            if response.status_code != 200:
-                raise ValueError(f"HTTP {response.status_code}: {response.text}")
+        last_error = None
+        
+        for api_version, model_name in api_configs:
+            try:
+                url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:generateContent?key={self.api_key}"
                 
-            resp_json = response.json()
-            
-            if "candidates" not in resp_json or not resp_json["candidates"]:
-                raise ValueError("API 沒有回傳有效的 candidates 內容")
+                headers = {
+                    "Content-Type": "application/json"
+                }
                 
-            response_text = resp_json["candidates"][0]["content"]["parts"][0]["text"]
+                payload = {
+                    "systemInstruction": {
+                        "parts": [{"text": SYSTEM_PROMPT}]
+                    },
+                    "contents": [
+                        {"parts": [{"text": user_prompt}]}
+                    ],
+                    "generationConfig": {
+                        "temperature": 0.1,
+                        "responseMimeType": "application/json"
+                    }
+                }
+                
+                logger.debug(f"Trying REST API: {api_version}/{model_name}")
+                response = requests.post(url, headers=headers, json=payload, timeout=30)
+                
+                if response.status_code == 200:
+                    resp_json = response.json()
+                    
+                    if "candidates" not in resp_json or not resp_json["candidates"]:
+                        raise ValueError("API 沒有回傳有效的 candidates 內容")
+                        
+                    response_text = resp_json["candidates"][0]["content"]["parts"][0]["text"]
 
-            # 清除可能殘留的 Markdown 標記（防禦性處理）
-            response_text = (
-                response_text
-                .replace("```json", "")
-                .replace("```", "")
-                .strip()
-            )
+                    # 清除可能殘留的 Markdown 標記（防禦性處理）
+                    response_text = (
+                        response_text
+                        .replace("```json", "")
+                        .replace("```", "")
+                        .strip()
+                    )
 
-            result_dict = json.loads(response_text)
+                    result_dict = json.loads(response_text)
 
-            # 驗證必要欄位
-            required_keys = {"invoice_date", "currency", "items", "total_foreign_amount"}
-            missing = required_keys - set(result_dict.keys())
-            if missing:
-                logger.warning(f"LLM response missing keys: {missing}")
-                raise json.JSONDecodeError(f"Missing keys: {missing}", response_text, 0)
+                    # 驗證必要欄位
+                    required_keys = {"invoice_date", "currency", "items", "total_foreign_amount"}
+                    missing = required_keys - set(result_dict.keys())
+                    if missing:
+                        logger.warning(f"LLM response missing keys: {missing}")
+                        raise json.JSONDecodeError(f"Missing keys: {missing}", response_text, 0)
 
-            logger.info("Successfully parsed LLM response to structured JSON.")
-            return result_dict
-
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parse error. Raw response: {response_text[:500]}")
-            logger.error(f"JSONDecodeError: {e}")
-            raise ValueError("ERR-003: Gemini JSON 輸出格式損毀") from e
-
-        except Exception as e:
-            err_str = str(e)
-            logger.error(f"LLM API error: {err_str}")
-            # ERR-003 re-raise from retry logic
-            if "ERR-003" in err_str:
-                raise ValueError("ERR-003: Gemini JSON 輸出格式損毀") from e
-            # ERR-004: API key / quota issues
-            raise ValueError(f"ERR-004: Gemini API 呼叫失敗 — {err_str}") from e
+                    logger.info(f"✅ Successfully used REST API: {api_version}/{model_name}")
+                    return result_dict
+                else:
+                    err_msg = f"HTTP {response.status_code}"
+                    try:
+                        err_json = response.json()
+                        if "error" in err_json:
+                            err_msg = err_json["error"].get("message", err_msg)
+                    except:
+                        err_msg = response.text[:200]
+                    logger.debug(f"API {api_version}/{model_name} failed: {err_msg}")
+                    last_error = err_msg
+                    
+            except Exception as e:
+                logger.debug(f"API {api_version}/{model_name} exception: {e}")
+                last_error = str(e)
+                continue
+        
+        # 所有配置都失敗
+        raise ValueError(f"ERR-004: Gemini API 呼叫失敗 — 所有模型配置均不可用。最後錯誤: {last_error}")

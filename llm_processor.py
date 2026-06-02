@@ -89,10 +89,7 @@ class LLMProcessor:
     def __init__(self, api_key: str = None, model_name: str = "gemini-2.5-flash"):
         """
         初始化 Gemini LLM。
-        :param api_key:    Gemini API Key（若未提供則從環境變數取得）
-        :param model_name: 預設使用 gemini-2.5-flash
         """
-        # 優先使用傳入的 api_key，若無則讀取環境變數，並進行 strip() 處理防範空格
         resolved_key = (api_key or "").strip()
         if not resolved_key:
             import os
@@ -101,8 +98,9 @@ class LLMProcessor:
         if not resolved_key:
             raise ValueError("ERR-004: Gemini API Key 未提供")
 
-        self.model_name = model_name
-        # NOTE：api_key 僅傳入 configure，不存於 self 以防 log 洩漏
+        # 💡 使用當前環境原生支援且效能最強大的預設模型
+        self.model_name = "gemini-2.5-flash"
+        
         genai.configure(api_key=resolved_key)
 
         self.model = genai.GenerativeModel(
@@ -113,7 +111,7 @@ class LLMProcessor:
                 "max_output_tokens": 8192,
             },
         )
-        logger.info(f"LLMProcessor initialized with model: {self.model_name}")
+        logger.info(f"LLMProcessor initialized with forced model path: {self.model_name}")
 
     def process_ocr_texts(self, ocr_texts: List[str]) -> Dict[str, Any]:
         """

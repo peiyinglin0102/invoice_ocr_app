@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Force reload: 3
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -7,13 +8,32 @@ import time
 from datetime import datetime
 import tempfile
 import os
+import uuid
 from dotenv import load_dotenv
 
 load_dotenv()
 
+import importlib
+import ocr_engine
+import llm_processor
+import finance_utils
+import db_manager
+
+# Force reload custom modules to completely bypass Streamlit's sticky in-memory cache!
+importlib.reload(ocr_engine)
+importlib.reload(llm_processor)
+importlib.reload(finance_utils)
+importlib.reload(db_manager)
+
 from ocr_engine import InvoiceOCREngine
 from llm_processor import LLMProcessor
 from finance_utils import FinanceUtils
+from db_manager import DatabaseManager
+
+# ─────────────────────────────────────────────
+# Initialize Database Manager
+# ─────────────────────────────────────────────
+db = DatabaseManager()
 
 # ─────────────────────────────────────────────
 # Page Config
@@ -119,48 +139,114 @@ document.addEventListener('DOMContentLoaded', function() {
 # Session State Initialization
 # ─────────────────────────────────────────────
 if 'api_key' not in st.session_state:
-    st.session_state.api_key = os.getenv("GEMINI_API_KEY", "")
-if 'result_json' not in st.session_state:
-    st.session_state.result_json = None
-if 'df_items' not in st.session_state:
-    st.session_state.df_items = None
-if 'metrics' not in st.session_state:
-    st.session_state.metrics = None
+    st.session_state.api_key = ""
+if 'active_trip_id' not in st.session_state:
+    st.session_state.active_trip_id = None
 if 'processing' not in st.session_state:
     st.session_state.processing = False
 if 'error_msg' not in st.session_state:
     st.session_state.error_msg = None
-if 'error_type' not in st.session_state:
-    st.session_state.error_type = None
+if 'warning_msg' not in st.session_state:
+    st.session_state.warning_msg = None
+if 'info_msg' not in st.session_state:
+    st.session_state.info_msg = None
 
 # ─────────────────────────────────────────────
-# Sidebar – Settings Panel
+# Sidebar – Settings Panel & Trip Management
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.title("⚙️ 系統設定")
 
-    st.markdown("#### 🔑 Gemini API Key")
-    # 取得當前有效的金鑰（優先使用手動輸入的，手動輸入空白則嘗試載入環境變數）
-    current_key = st.session_state.api_key.strip()
-    if not current_key:
-        current_key = os.getenv("GEMINI_API_KEY", "").strip()
-
-    api_key_input = st.text_input(
-        "Gemini API Key",
-        type="password",
-        value=current_key,
-        help="請輸入您的 Google Gemini API Key（若留空將自動讀取 .env 的金鑰）",
-        label_visibility="collapsed",
-    )
-    if api_key_input.strip() != st.session_state.api_key.strip():
-        st.session_state.api_key = api_key_input.strip()
-
-    # 顯示狀態
-    display_key = st.session_state.api_key.strip() or os.getenv("GEMINI_API_KEY", "").strip()
-    if display_key:
-        st.success("✅ API Key 已設定")
+    # 1. Database indicator
+    if db.use_mongodb:
+        st.success("☁️ 雲端資料庫：MongoDB Atlas 已連線")
     else:
-        st.warning("⚠️ 尚未設定 API Key")
+        st.info("📂 本地資料庫：使用 `local_db.json` 持久化儲存")
+
+    st.markdown("---")
+    st.markdown("#### ✈️ 旅遊專案切換")
+    
+    trips = db.get_trips()
+    trip_options = {t["trip_id"]: f"{t['trip_name']} ({t['base_currency']})" for t in trips}
+    
+    if trips:
+        if st.session_state.active_trip_id not in trip_options:
+            st.session_state.active_trip_id = trips[0]["trip_id"]
+            
+        selected_trip_id = st.selectbox(
+            "選擇現有的旅遊專案",
+            options=list(trip_options.keys()),
+            format_func=lambda x: trip_options[x],
+            index=list(trip_options.keys()).index(st.session_state.active_trip_id),
+            label_visibility="collapsed",
+            key="active_trip_selectbox"
+        )
+        if selected_trip_id != st.session_state.active_trip_id:
+            st.session_state.active_trip_id = selected_trip_id
+            st.session_state.warning_msg = None
+            st.session_state.info_msg = None
+            st.rerun()
+    else:
+        st.warning("⚠️ 尚未建立任何專案，請在下方建立第一個專案")
+        st.session_state.active_trip_id = None
+
+    # Expander to create a new trip project
+    with st.expander("➕ 建立新旅遊專案"):
+        with st.form("new_trip_form", clear_on_submit=True):
+            new_name = st.text_input("旅遊專案名稱", placeholder="例如：2026東京大縱走")
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                new_start = st.date_input("開始日期")
+            with col_d2:
+                new_end = st.date_input("結束日期")
+            new_currency = st.selectbox("主要外幣幣別", ["JPY", "KRW", "USD", "EUR", "GBP", "HKD", "SGD", "CNY"], index=0)
+            new_budget = st.number_input("專案預算 (台幣 TWD)", min_value=100, value=50000, step=1000)
+            
+            submit_trip = st.form_submit_button("建立專案", use_container_width=True)
+            if submit_trip:
+                if not new_name.strip():
+                    st.error("請輸入專案名稱！")
+                elif new_start > new_end:
+                    st.error("開始日期不能晚於結束日期！")
+                else:
+                    new_trip = db.create_trip(
+                        name=new_name,
+                        start_date=new_start.strftime("%Y-%m-%d"),
+                        end_date=new_end.strftime("%Y-%m-%d"),
+                        base_currency=new_currency,
+                        budget_twd=new_budget
+                    )
+                    st.session_state.active_trip_id = new_trip["trip_id"]
+                    st.success(f"✅ 專案 {new_name} 建立成功！")
+                    time.sleep(0.5)
+                    st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### 🔑 Gemini API 金鑰")
+    
+    # Check if API Key is already provided in environment variables or secrets
+    env_key = os.getenv("GEMINI_API_KEY", "").strip()
+    try:
+        import streamlit as st
+        if "GEMINI_API_KEY" in st.secrets:
+            env_key = st.secrets["GEMINI_API_KEY"].strip()
+    except Exception:
+        pass
+
+    if env_key:
+        st.success("🔑 API Key 已由 Secrets/環境變數自動載入")
+        st.session_state.api_key = env_key
+    else:
+        api_key_input = st.text_input(
+            "輸入 Gemini API Key",
+            type="password",
+            value=st.session_state.api_key.strip(),
+            help="請輸入您的 Google Gemini API Key",
+            label_visibility="collapsed",
+        )
+        if api_key_input.strip() != st.session_state.api_key.strip():
+            st.session_state.api_key = api_key_input.strip()
+            st.rerun()
 
     st.markdown("---")
     st.markdown("#### 🌐 發票語系")
@@ -178,81 +264,193 @@ with st.sidebar:
     )
     lang_code = lang_options[lang_choice]
 
-    st.markdown("---")
-    st.markdown("#### 📋 使用說明")
-    st.markdown("""
-1. 輸入 Gemini API Key
-2. 選擇發票語系
-3. 上傳發票圖片
-4. 點擊「開始辨識」
-5. 查看分析結果並匯出
-""")
-
 # ─────────────────────────────────────────────
 # Main Content Area
 # ─────────────────────────────────────────────
 st.title("🧾 AI 智能外幣發票理財系統")
-st.markdown("拍照上傳發票，AI 自動辨識、翻譯、分類，並換算台幣消費金額。")
+
+# Get active trip doc
+active_trip = None
+if st.session_state.active_trip_id:
+    active_trip = next((t for t in db.get_trips() if t["trip_id"] == st.session_state.active_trip_id), None)
+
+if active_trip:
+    st.markdown(f"📍 目前旅遊專案：**{active_trip['trip_name']}** (主要外幣: {active_trip['base_currency']} | 預算: NT$ {int(active_trip['budget_twd']):,})")
+else:
+    st.markdown("📸 拍照上傳發票，AI 自動辨識、翻譯、分類，並換算台幣消費金額。")
 st.markdown("---")
 
-# ── Upload Section ──
-st.markdown("### 📤 上傳發票圖片")
-uploaded_file = st.file_uploader(
-    "支援格式：JPG / PNG / WebP　｜　最大 10 MB",
-    type=["jpg", "jpeg", "png", "webp"],
-    accept_multiple_files=False,
-    help="可點擊選擇，或直接拖曳圖片至此區域。行動裝置可直接開啟相機拍照上傳。",
-)
-
-if uploaded_file is not None:
-    if uploaded_file.size > 10 * 1024 * 1024:
-        st.warning("⚠️ ERR-001：檔案大小超過 10MB 上限，請壓縮後重新上傳。")
-        uploaded_file = None
-    else:
-        st.image(
-            uploaded_file,
-            caption=f"📎 已上傳發票預覽 ｜ {uploaded_file.name} ({uploaded_file.size / 1024:.1f} KB)",
-            use_container_width=True,
-        )
+if not active_trip:
+    st.warning("👈 請先在側邊欄建立或選擇旅遊專案，即可開始記帳與辨識發票！")
+    st.stop()
 
 # ─────────────────────────────────────────────
-# Button State Machine
+# Load Cumulative Trip Data (Always loaded first to populate UI)
 # ─────────────────────────────────────────────
-has_api_key = bool(st.session_state.api_key.strip() or os.getenv("GEMINI_API_KEY", "").strip())
-is_disabled = (not has_api_key) or (uploaded_file is None) or st.session_state.processing
-start_btn = st.button(
-    "🔍 開始辨識" if not st.session_state.processing else "⏳ 辨識中，請稍候...",
-    disabled=is_disabled,
-    type="primary",
-    use_container_width=True,
-)
+invoices = db.get_invoices(st.session_state.active_trip_id)
 
-# Show persisted error (after rerun)
+# Recalculate stats
+total_foreign_accumulated = 0.0
+total_twd_accumulated = 0.0
+
+for inv in invoices:
+    if inv["currency"] == active_trip["base_currency"]:
+        total_foreign_accumulated += inv["total_foreign_amount"]
+    total_twd_accumulated += inv["total_twd"]
+
+remaining_budget = float(active_trip["budget_twd"]) - total_twd_accumulated
+
+# Flatten items for st.data_editor & Plotly Chart
+flat_items = []
+for inv in invoices:
+    inv_id = inv["invoice_id"]
+    rate = inv["exchange_rate"]
+    inv_date = inv["invoice_date"]
+    for idx, item in enumerate(inv.get("purchase_details", [])):
+        flat_items.append({
+            "invoice_id": inv_id,
+            "item_index": idx,
+            "original_name": item.get("original_name", ""),
+            "translated_name": item.get("translated_name", ""),
+            "unit_price": float(item.get("unit_price", 0)),
+            "quantity": int(item.get("quantity", 1)),
+            "tax_flag": item.get("tax_flag", ""),
+            "category": item.get("category", "其他"),
+            "twd_subtotal": int(round(float(item.get("unit_price", 0)) * int(item.get("quantity", 1)) * rate)),
+            "invoice_date": inv_date,
+            "rate": rate
+        })
+
+df_items_accumulated = pd.DataFrame(flat_items)
+
+# ─────────────────────────────────────────────
+# Metrics Cards (Unified at the Top)
+# ─────────────────────────────────────────────
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric(
+        label="📅 專案起訖日期",
+        value=f"{active_trip['start_date']} ~ {active_trip['end_date']}",
+    )
+with col2:
+    foreign_str = f"{total_foreign_accumulated:,.2f} {active_trip['base_currency']}"
+    st.metric(label="💴 累積外幣消費", value=foreign_str)
+with col3:
+    st.metric(
+        label="🏦 累積台幣消費",
+        value=f"NT$ {int(total_twd_accumulated):,}"
+    )
+with col4:
+    st.markdown('<p class="twd-label">🎯 預算剩餘額度</p>', unsafe_allow_html=True)
+    color = "#E53E3E" if remaining_budget < 0 else "#38A169"
+    st.markdown(
+        f'<p class="twd-highlight" style="color: {color}">NT$ {int(remaining_budget):,}</p>',
+        unsafe_allow_html=True,
+    )
+
+st.markdown("---")
+
+# Show pipeline messages
 if st.session_state.error_msg:
     st.error(st.session_state.error_msg)
     st.session_state.error_msg = None
-
-if start_btn:
-    st.session_state.processing = True
-    st.session_state.result_json = None
-    st.session_state.df_items = None
-    st.session_state.metrics = None
-    st.session_state.error_msg = None
-    st.rerun()
+if st.session_state.warning_msg:
+    st.warning(st.session_state.warning_msg)
+if st.session_state.info_msg:
+    st.info(st.session_state.info_msg)
 
 # ─────────────────────────────────────────────
-# Processing Pipeline
+# Main Panel Layout: Split Pie Chart & Upload Box Side-by-Side (UI/UX Optimization)
+# ─────────────────────────────────────────────
+col_left, col_right = st.columns([11, 9])
+
+with col_left:
+    st.markdown("### 🥧 旅程消費分類比例加總")
+    if not df_items_accumulated.empty:
+        CATEGORY_COLORS = {
+            "醫療保健": "#68D391",
+            "藥妝":     "#63B3ED",
+            "零食/點心": "#F6AD55",
+            "冷凍食品/冰品": "#76E4F7",
+            "食品/飲料": "#FC8181",
+            "交通":     "#B794F4",
+            "餐飲":     "#F687B3",
+            "其他":     "#CBD5E0",
+        }
+
+        # Aggregate by category
+        pie_df = df_items_accumulated.groupby("category", as_index=False)["twd_subtotal"].sum()
+        pie_df.columns = ["分類", "台幣金額"]
+
+        color_sequence = [CATEGORY_COLORS.get(cat, "#CBD5E0") for cat in pie_df["分類"]]
+
+        fig = px.pie(
+            pie_df,
+            values="台幣金額",
+            names="分類",
+            color="分類",
+            color_discrete_sequence=color_sequence,
+            height=360,
+            hover_data=["台幣金額"],
+        )
+        fig.update_traces(
+            textposition="inside",
+            textinfo="percent+label",
+            hovertemplate="<b>%{label}</b><br>累積金額：NT$ %{value:,}<br>佔比：%{percent}<extra></extra>",
+        )
+        fig.update_layout(
+            legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5),
+            margin=dict(l=0, r=0, t=10, b=40),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
+    else:
+        st.info("ℹ️ 此專案目前尚無發票記錄，請在上傳區新增以產生圓餅圖！")
+
+with col_right:
+    st.markdown("### 📤 上傳發票圖片")
+    uploaded_file = st.file_uploader(
+        "支援格式：JPG / PNG / WebP ｜ 最大 10 MB",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=False,
+        label_visibility="collapsed",
+        help="可點擊選擇，或直接拖曳圖片至此區域。行動裝置可直接開啟相機拍照上傳。",
+    )
+
+    if uploaded_file is not None:
+        st.image(
+            uploaded_file,
+            caption=f"📎 已選擇發票 ｜ {uploaded_file.name}",
+            width=200
+        )
+
+    has_api_key = bool(st.session_state.api_key.strip())
+    is_disabled = (not has_api_key) or (uploaded_file is None) or st.session_state.processing
+    start_btn = st.button(
+        "🔍 開始辨識" if not st.session_state.processing else "⏳ 辨識中，請稍候...",
+        disabled=is_disabled,
+        type="primary",
+        use_container_width=True,
+    )
+
+    if start_btn:
+        st.session_state.processing = True
+        st.session_state.error_msg = None
+        st.session_state.warning_msg = None
+        st.session_state.info_msg = None
+        st.rerun()
+
+# ─────────────────────────────────────────────
+# Processing Pipeline Execution
 # ─────────────────────────────────────────────
 if st.session_state.processing and uploaded_file is not None:
+    st.session_state.processing = False
     progress_bar = st.progress(0, text="準備開始...")
     status_container = st.status("⏳ 正在處理發票...", expanded=True)
 
     try:
-        # ── Stage 1: Image Preprocessing + OCR ──
         status_container.update(label="🔍 正在預處理影像與辨識發票文字...", state="running")
         progress_bar.progress(10, text="🔍 正在預處理影像與辨識發票文字...")
 
-        # Write temp file (will be deleted immediately after OCR)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
@@ -260,7 +458,6 @@ if st.session_state.processing and uploaded_file is not None:
         ocr_engine = InvoiceOCREngine(lang=lang_code)
         raw_texts = ocr_engine.extract_text(tmp_path)
 
-        # Immediately remove temp file from disk (security requirement)
         try:
             os.remove(tmp_path)
         except OSError:
@@ -271,22 +468,15 @@ if st.session_state.processing and uploaded_file is not None:
         if not raw_texts:
             raise ValueError("ERR-002: OCR 未擷取到任何文字")
 
-        # ── Stage 2: LLM Cleaning + Translation ──
         status_container.update(label="🤖 AI 正在清洗雜訊、分析品項並翻譯...", state="running")
         progress_bar.progress(40, text="🤖 AI 正在清洗雜訊、分析品項並翻譯...")
 
-        # 解析有效金鑰：優先使用 UI 手動輸入，若無則讀取 .env
-        effective_key = st.session_state.api_key.strip()
-        if not effective_key:
-            effective_key = os.getenv("GEMINI_API_KEY", "").strip()
-
-        llm = LLMProcessor(api_key=effective_key)
+        llm = LLMProcessor(api_key=st.session_state.api_key.strip())
 
         try:
             result_dict = llm.process_ocr_texts(raw_texts)
         except ValueError as e:
             if "ERR-003" in str(e):
-                # Retry once per spec
                 status_container.write("⚠️ JSON 解析失敗，正在重試...")
                 time.sleep(1)
                 result_dict = llm.process_ocr_texts(raw_texts)
@@ -295,38 +485,40 @@ if st.session_state.processing and uploaded_file is not None:
 
         progress_bar.progress(66, text="🤖 LLM 分析完成")
 
-        # ── Stage 3: Exchange Rate + Calculation ──
         status_container.update(label="💱 正在查詢歷史匯率並換算台幣...", state="running")
         progress_bar.progress(70, text="💱 正在查詢歷史匯率並換算台幣...")
 
         raw_date = result_dict.get("invoice_date", "")
-        # Validate and normalise date string
         date_str = ""
+        is_fallback_date = False
         if raw_date and raw_date.strip():
             try:
                 datetime.strptime(raw_date.strip(), "%Y-%m-%d")
                 date_str = raw_date.strip()
             except ValueError:
                 date_str = ""
+        
+        # Date backtracking logic
         if not date_str:
-            date_str = datetime.now().strftime("%Y-%m-%d")
+            date_str = active_trip["start_date"]
+            is_fallback_date = True
+            st.session_state.info_msg = "ℹ️ 無法識別發票日期，已採用旅遊首日匯率計算"
 
-        currency = (result_dict.get("currency") or "JPY").strip().upper()
+        currency = (result_dict.get("currency") or active_trip["base_currency"]).strip().upper()
 
         rate_result = FinanceUtils.get_historical_exchange_rate(currency, "TWD", date_str)
-        is_fallback = False
+        is_fallback_rate = False
         if isinstance(rate_result, tuple):
-            rate_val, is_fallback = rate_result
+            rate_val, is_fallback_rate = rate_result
         else:
             rate_val = float(rate_result)
 
-        if is_fallback:
-            st.warning(
+        if is_fallback_rate:
+            st.session_state.warning_msg = (
                 f"⚠️ ERR-005：yfinance 匯率查詢失敗，目前使用估算匯率 "
                 f"（1 {currency} ≈ {rate_val} TWD），數據僅供參考。"
             )
 
-        # ── Build DataFrame ──
         items = result_dict.get("items", [])
         df = pd.DataFrame(items)
 
@@ -334,32 +526,31 @@ if st.session_state.processing and uploaded_file is not None:
             df["unit_price"] = pd.to_numeric(df.get("unit_price", 0), errors="coerce").fillna(0)
             df["quantity"] = pd.to_numeric(df.get("quantity", 1), errors="coerce").fillna(1)
             df["twd_subtotal"] = (df["unit_price"] * df["quantity"] * rate_val).round().astype(int)
-            # Ensure required columns exist
             for col in ["original_name", "translated_name", "tax_flag", "category"]:
                 if col not in df.columns:
                     df[col] = ""
             total_twd = int(df["twd_subtotal"].sum())
         else:
             total_twd = 0
-            df = pd.DataFrame(
-                columns=["original_name", "translated_name", "unit_price", "quantity", "tax_flag", "category", "twd_subtotal"]
-            )
 
         progress_bar.progress(100, text="✅ 處理完成！")
 
-        # Store results in session (no disk write)
-        st.session_state.result_json = result_dict
-        st.session_state.df_items = df
-        st.session_state.metrics = {
-            "date": date_str,
-            "foreign_total": result_dict.get("total_foreign_amount", 0),
+        # Save to database
+        items_list = df.to_dict(orient="records") if not df.empty else []
+        invoice_doc = {
+            "invoice_id": str(uuid.uuid4()),
+            "trip_id": st.session_state.active_trip_id,
+            "invoice_date": date_str,
             "currency": currency,
-            "rate": rate_val,
-            "total_twd": total_twd,
+            "exchange_rate": rate_val,
+            "total_foreign_amount": float(result_dict.get("total_foreign_amount", 0)),
+            "total_twd": float(total_twd),
+            "purchase_details": items_list,
+            "uploaded_at": datetime.utcnow().isoformat() + "Z"
         }
+        db.save_invoice(invoice_doc)
 
-        status_container.update(label="✅ 辨識成功！結果如下。", state="complete")
-        st.success("✅ 發票辨識與分析已完成！請查看下方結果。")
+        status_container.update(label="✅ 發票上傳並持久化保存成功！", state="complete")
         st.session_state.processing = False
         st.rerun()
 
@@ -376,90 +567,28 @@ if st.session_state.processing and uploaded_file is not None:
             st.session_state.error_msg = (
                 "❌ ERR-003：AI 回傳的 JSON 格式損毀，已重試仍失敗。請稍後再試。"
             )
-        elif "ERR-004" in err_msg or "API_KEY_INVALID" in err_msg or "invalid" in err_msg.lower():
-            st.session_state.error_msg = (
-                "❌ ERR-004：Gemini API 驗證失敗。請確認側欄中的 API Key 是否正確填寫。"
-            )
+        elif "ERR-004" in err_msg:
+            st.session_state.error_msg = f"❌ {err_msg}"
         else:
             st.session_state.error_msg = f"❌ 系統發生未預期錯誤：{err_msg}"
         st.rerun()
 
 # ─────────────────────────────────────────────
-# Results Rendering
+# Cumulative Details Table & Save Section (Moved Neatly to the Bottom)
 # ─────────────────────────────────────────────
-CATEGORY_COLORS = {
-    "醫療保健": "#68D391",
-    "藥妝":     "#63B3ED",
-    "零食/點心": "#F6AD55",
-    "冷凍食品/冰品": "#76E4F7",
-    "食品/飲料": "#FC8181",
-    "交通":     "#B794F4",
-    "餐飲":     "#F687B3",
-    "其他":     "#CBD5E0",
-}
-
-if st.session_state.df_items is not None and st.session_state.metrics is not None:
+if not df_items_accumulated.empty:
     st.markdown("---")
-    st.subheader("📊 財務分析報告")
+    st.markdown("### 🛒 專案累積購買明細表格")
+    st.info("💡 雙擊任一欄位即可直接編輯修正，支援在底部直接點擊 ➕ 新增項目，或點擊左側 🗑️ 刪除。完成後請務必點擊下方 **💾 儲存變更** 按鈕！")
 
-    m = st.session_state.metrics
-
-    # ── Edit Base Info Expander ──
-    with st.expander("📝 修正基本資訊 (發票日期、幣別、匯率)"):
-        col_e1, col_e2, col_e3 = st.columns(3)
-        with col_e1:
-            try:
-                current_date = datetime.strptime(m["date"], "%Y-%m-%d").date()
-            except Exception:
-                current_date = datetime.today().date()
-            new_date = st.date_input("消費日期", value=current_date, key="edit_date_input")
-            new_date_str = new_date.strftime("%Y-%m-%d")
-        with col_e2:
-            new_currency = st.text_input("外幣幣別", value=m["currency"], key="edit_currency_input").strip().upper()
-        with col_e3:
-            new_rate = st.number_input("適用匯率", value=float(m["rate"]), format="%.6f", min_value=0.000001, key="edit_rate_input")
-            
-        if new_date_str != m["date"] or new_currency != m["currency"] or new_rate != m["rate"]:
-            st.session_state.metrics["date"] = new_date_str
-            st.session_state.metrics["currency"] = new_currency
-            st.session_state.metrics["rate"] = new_rate
-            if st.session_state.result_json:
-                st.session_state.result_json["invoice_date"] = new_date_str
-                st.session_state.result_json["currency"] = new_currency
-            
-            # Recalculate TWD subtotals and TWD total
-            st.session_state.df_items["twd_subtotal"] = (st.session_state.df_items["unit_price"] * st.session_state.df_items["quantity"] * new_rate).round().astype(int)
-            st.session_state.metrics["total_twd"] = int(st.session_state.df_items["twd_subtotal"].sum())
-            st.rerun()
-
-    # ── Metrics Cards ──
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric(
-            label="📅 消費日期",
-            value=m["date"] if m["date"] else "—",
-        )
-    with col2:
-        foreign_str = f"{m['foreign_total']:,} {m['currency']}"
-        st.metric(label="💴 外幣總額", value=foreign_str)
-    with col3:
-        st.metric(label="📈 適用匯率", value=f"{m['rate']:.4f}")
-    with col4:
-        st.markdown('<p class="twd-label">🏦 台幣總花費</p>', unsafe_allow_html=True)
-        st.markdown(
-            f'<p class="twd-highlight">NT$ {m["total_twd"]:,}</p>',
-            unsafe_allow_html=True,
-        )
-
-    # ── Purchase Details Table ──
-    st.markdown("### 🛒 購買明細表格")
-    st.info("💡 雙擊任一欄位即可直接編輯修正。若辨識結果有微小誤差，您可在此手動調整！")
-
-    # Use st.data_editor to edit st.session_state.df_items in place
+    # Use st.data_editor to edit items in place
     edited_df = st.data_editor(
-        st.session_state.df_items,
-        use_container_width=True,
+        df_items_accumulated,
+        width="stretch",
         column_config={
+            "invoice_id": None,      # Hide invoice UUID
+            "item_index": None,      # Hide index
+            "rate": None,            # Hide conversion rate
             "original_name": st.column_config.TextColumn("原始文字", width="medium"),
             "translated_name": st.column_config.TextColumn("品項翻譯", width="large"),
             "unit_price": st.column_config.NumberColumn("單價(外幣)", format="%.2f"),
@@ -470,115 +599,147 @@ if st.session_state.df_items is not None and st.session_state.metrics is not Non
                 options=["醫療保健", "藥妝", "零食/點心", "冷凍食品/冰品", "食品/飲料", "交通", "餐飲", "其他"],
                 width="medium"
             ),
+            "invoice_date": st.column_config.TextColumn("發票日期", width="medium"),
             "twd_subtotal": st.column_config.NumberColumn("台幣小計 (NT$)", format="%d", disabled=True),
         },
         num_rows="dynamic",
-        key="invoice_items_editor"
+        key="cumulative_items_editor"
     )
 
-    # Detect changes and recalculate subtotals/totals
-    if not edited_df.equals(st.session_state.df_items):
-        edited_df["unit_price"] = pd.to_numeric(edited_df["unit_price"], errors="coerce").fillna(0)
-        edited_df["quantity"] = pd.to_numeric(edited_df["quantity"], errors="coerce").fillna(1)
-        edited_df["twd_subtotal"] = (edited_df["unit_price"] * edited_df["quantity"] * m["rate"]).round().astype(int)
-        
-        st.session_state.df_items = edited_df.copy()
-        
-        # Recalculate totals
-        new_foreign_total = float((st.session_state.df_items["unit_price"] * st.session_state.df_items["quantity"]).sum())
-        new_twd_total = int(st.session_state.df_items["twd_subtotal"].sum())
-        
-        st.session_state.metrics["foreign_total"] = new_foreign_total
-        st.session_state.metrics["total_twd"] = new_twd_total
-        
-        if st.session_state.result_json:
-            st.session_state.result_json["items"] = st.session_state.df_items.to_dict(orient="records")
-            st.session_state.result_json["total_foreign_amount"] = new_foreign_total
-            
-        st.rerun()
+    # Database synchronization save button
+    col_save, _ = st.columns([1, 4])
+    with col_save:
+        save_btn = st.button("💾 儲存變更並更新資料庫", type="primary", use_container_width=True)
 
-    # ── Pie Chart ──
-    if not st.session_state.df_items.empty:
-        st.markdown("### 🥧 本次消費分類比例")
+    if save_btn:
+        with st.spinner("正在將變更儲存至資料庫..."):
+            edited_invoices = {}
+            new_rows = []
 
-        # Aggregate by category → sum of twd_subtotal
-        pie_df = (
-            st.session_state.df_items
-            .groupby("category", as_index=False)["twd_subtotal"]
-            .sum()
-        )
-        pie_df.columns = ["分類", "台幣金額"]
+            for idx, row in edited_df.iterrows():
+                row_dict = row.to_dict()
+                inv_id = row_dict.get("invoice_id")
+                
+                if pd.isna(inv_id) or not inv_id:
+                    new_rows.append(row_dict)
+                    continue
 
-        # Assign consistent colours from palette
-        color_sequence = [CATEGORY_COLORS.get(cat, "#CBD5E0") for cat in pie_df["分類"]]
+                if inv_id not in edited_invoices:
+                    edited_invoices[inv_id] = []
+                
+                edited_invoices[inv_id].append(row_dict)
 
-        fig = px.pie(
-            pie_df,
-            values="台幣金額",
-            names="分類",
-            title="本次消費分類比例",
-            color="分類",
-            color_discrete_sequence=color_sequence,
-            height=400,
-            hover_data=["台幣金額"],
-        )
-        fig.update_traces(
-            textposition="inside",
-            textinfo="percent+label",
-            hovertemplate="<b>%{label}</b><br>金額：NT$ %{value:,}<br>佔比：%{percent}<extra></extra>",
-        )
-        fig.update_layout(
-            legend=dict(
-                orientation="v",
-                yanchor="top",
-                y=1,
-                xanchor="left",
-                x=1.02,
-            ),
-            margin=dict(l=0, r=160, t=40, b=0),
-        )
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            config={"scrollZoom": False},
-        )
+            # Read all current invoices
+            for inv in invoices:
+                inv_id = inv["invoice_id"]
+                rate = inv["exchange_rate"]
+                
+                if inv_id not in edited_invoices:
+                    db.delete_invoice(inv_id)
+                else:
+                    raw_items = edited_invoices[inv_id]
+                    updated_items = []
+                    new_foreign_total = 0.0
+                    new_twd_total = 0.0
+
+                    for item in raw_items:
+                        u_price = float(item["unit_price"])
+                        qty = int(item["quantity"])
+                        sub_twd = int(round(u_price * qty * rate))
+                        
+                        updated_items.append({
+                            "original_name": str(item["original_name"]),
+                            "translated_name": str(item["translated_name"]),
+                            "unit_price": u_price,
+                            "quantity": qty,
+                            "tax_flag": str(item["tax_flag"]),
+                            "category": str(item["category"]),
+                            "twd_subtotal": sub_twd
+                        })
+                        new_foreign_total += (u_price * qty)
+                        new_twd_total += sub_twd
+
+                    db.update_invoice_items(inv_id, updated_items, new_foreign_total, new_twd_total)
+
+            # Manual additions
+            if new_rows:
+                new_items_list = []
+                total_new_foreign = 0.0
+                total_new_twd = 0.0
+                default_rate, _ = FinanceUtils.get_historical_exchange_rate(active_trip["base_currency"], "TWD", active_trip["start_date"])
+
+                for row in new_rows:
+                    u_price = float(row.get("unit_price") or 0.0)
+                    qty = int(row.get("quantity") or 1)
+                    sub_twd = int(round(u_price * qty * default_rate))
+
+                    new_items_list.append({
+                        "original_name": str(row.get("original_name") or "手動新增品項"),
+                        "translated_name": str(row.get("translated_name") or "手動新增品項"),
+                        "unit_price": u_price,
+                        "quantity": qty,
+                        "tax_flag": str(row.get("tax_flag") or ""),
+                        "category": str(row.get("category") or "其他"),
+                        "twd_subtotal": sub_twd
+                    })
+                    total_new_foreign += (u_price * qty)
+                    total_new_twd += sub_twd
+
+                manual_invoice_doc = {
+                    "invoice_id": str(uuid.uuid4()),
+                    "trip_id": st.session_state.active_trip_id,
+                    "invoice_date": active_trip["start_date"],
+                    "currency": active_trip["base_currency"],
+                    "exchange_rate": default_rate,
+                    "total_foreign_amount": total_new_foreign,
+                    "total_twd": total_new_twd,
+                    "purchase_details": new_items_list,
+                    "uploaded_at": datetime.utcnow().isoformat() + "Z"
+                }
+                db.save_invoice(manual_invoice_doc)
+
+            st.success("✅ 雲端資料庫更新成功，所有變更已順利儲存！")
+            time.sleep(0.5)
+            st.rerun()
 
     # ── Export Section ──
-    st.markdown("### 💾 匯出報告")
+    st.markdown("---")
+    st.markdown("### 💾 匯出專案帳目報告")
 
-    # Build export dataframe (all columns including original_name)
-    export_df = st.session_state.df_items.rename(columns={
+    export_df = df_items_accumulated.rename(columns={
         "original_name":  "原始文字",
         "translated_name": "品項翻譯",
-        "unit_price":     f"單價({m['currency']})",
+        "unit_price":     "單價(外幣)",
         "quantity":       "數量",
         "tax_flag":       "稅務標記",
         "category":       "分類",
         "twd_subtotal":   "台幣小計(NT$)",
+        "invoice_date":   "消費日期",
     })
 
-    # UTF-8 BOM for Excel compatibility
     csv_bytes = export_df.to_csv(index=False).encode("utf-8-sig")
 
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
         st.download_button(
-            label="⬇️ 下載 CSV（Excel 相容）",
+            label="⬇️ 下載專案累積 CSV（Excel 相容）",
             data=csv_bytes,
-            file_name=f"invoice_{m['date']}.csv",
+            file_name=f"trip_report_{active_trip['trip_name']}.csv",
             mime="text/csv",
             use_container_width=True,
         )
     with col_dl2:
-        # Attach exchange rate and TWD total to JSON export
-        export_json = dict(st.session_state.result_json)
-        export_json["exchange_rate"] = m["rate"]
-        export_json["total_twd"] = m["total_twd"]
+        export_json = {
+            "trip_info": active_trip,
+            "invoices": invoices,
+            "total_twd_accumulated": total_twd_accumulated,
+            "remaining_budget_twd": remaining_budget
+        }
         json_str = json.dumps(export_json, ensure_ascii=False, indent=2)
         st.download_button(
-            label="⬇️ 下載 JSON",
+            label="⬇️ 下載專案完整 JSON 資料",
             data=json_str,
-            file_name=f"invoice_{m['date']}.json",
+            file_name=f"trip_report_{active_trip['trip_name']}.json",
             mime="application/json",
             use_container_width=True,
         )

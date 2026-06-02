@@ -4,11 +4,7 @@
 env/
 venv/
 ENV/
-env.bak/
-venv.bak/
-backend/venv/
-
-# Python
+local_db.json
 __pycache__/
 *.py[cod]
 *$py.class
@@ -56,6 +52,3 @@ Thumbs.db
 *.swp
 *.swo
 *~
-
-# Documentation and Notes
-implementation_plan*

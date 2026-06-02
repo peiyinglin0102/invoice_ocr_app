@@ -1,0 +1,41 @@
+# 多國發票辨識與自動理財系統 (前後端分離架構) 開發計畫
+
+根據您的最新需求，我們將原本單一的 Streamlit 原型重構為**真正企業級的「前後端分離 (Frontend/Backend Decoupled) 架構」**。這個架構非常適合正式網頁產品，並且完全支援在您的本地 (Localhost) 順暢啟動測試。
+
+## User Review Required
+
+> [!IMPORTANT]
+> - **架構劇變**：我們將捨棄 Streamlit，改採 **FastAPI** 作為 Python 專業後端，負責繁重的 PaddleOCR、LLM 溝通與匯率計算。前端則使用 **Vite + React** 搭配原生 CSS (Vanilla CSS)，為您打造具備頂級互動感、微動畫設計與玻璃擬物化 (Glassmorphism) 效果的超質感 Web UI。
+> - **啟動方式改變**：由於現在分離了前後端，在本地測試時會需要分別啟動兩個服務 (Node.js 開發伺服器與 Python Uvicorn 伺服器)，我會準備一支專屬的 `.bat` 啟動器來幫您一鍵雙開。
+
+## Proposed Changes
+
+我們將在桌面建立/重構 `C:\Users\winnie.lin\Desktop\invoice_ocr_app`，其目錄結構將分為 `backend` 與 `frontend` 兩大區塊。
+
+### 1. Backend 伺服器 (Python / FastAPI)
+負責所有邏輯處理，暴露安全乾淨的 API 端點供網頁呼叫。
+- **[NEW] `backend/main.py`**: FastAPI 主程式，暴露出 `POST /api/process_image` 的介面。
+- **[MODIFY] `backend/ocr_engine.py`**: 將稍早開發的 PaddleOCR 引擎移至後端模組。
+- **[MODIFY] `backend/llm_processor.py`**: 處理 Gemini / OpenAI 串接。
+- **[MODIFY] `backend/finance_utils.py`**: yfinance 匯率換算邏輯。
+- **[MODIFY] `backend/requirements.txt`**: 移除 Streamlit，新增 `fastapi`, `uvicorn`, `python-multipart`。
+
+### 2. Frontend 介面 (Vite + React)
+提供絕美且流暢的使用者預覽、上傳與圖表展示操作。
+- **初始化機制**: 使用 `npx -y create-vite@latest frontend --template react` 建立。
+- **質感受感設計**: 完全使用 Vanilla CSS 撰寫 UI，引入現代字體 (Inter, Roboto)，使用卡片式陰影、動態 Hover 效果與高互動性的上傳拖曳區域，營造不像是期中專題，而是真實新創產品的強烈「WOW」感。
+- **功能對接**: 使用 `fetch` 或 `axios` 對接後端的 API，並在前端完成分析圖表與單據明細表的渲染。
+
+### 3. 一鍵啟動與橋接模組
+- **[NEW] `start_dev.bat`**: 全新的啟動檔案。包含為後端自動安裝 Python 庫並啟動 `uvicorn main:app --port 8000`，同時為前端自動執行 `npm install` 與 `npm run dev` 開啟 Web 頁面。
+
+## Open Questions
+
+> [!WARNING]
+> 1. 前端網頁將使用 React 進行實作以符合現代的網頁開發標準。您的電腦環境是否已經安裝了 Node.js (用於執行 Frontend)？如果還沒，我們會需要請您先到 Node.js 官網下載安裝喔。
+> 2. 將目錄切分為清晰的 `frontend/` 與 `backend/` 是否符合您對「要有前後端」的架構期待？
+
+## Verification Plan
+1. 確認 Node 已經安裝。
+2. 透過 `start_dev.bat` 一併啟動 localhost 8000 (API) 與 localhost 5173 (Web)。
+3. 在瀏覽器上從前端點選上傳發票、輸入 Key，前端送出非同步回呼 (AJAX) 至 FastAPI 後端，後端解析完成再將 JSON 丟回給前端進行絕美排版與統計圖表渲染。

@@ -79,7 +79,6 @@ SYSTEM_PROMPT = """妳是一個極致精準的財務發票與收據數據結構�
   "total_foreign_amount": 數字(發票合計消費總金額，即 total_foreign_amount，如 4719.0)
 }"""
 
-
 class LLMProcessor:
     """
     Gemini 1.5 Flash LLM 處理器。
@@ -95,193 +94,44 @@ class LLMProcessor:
         if not resolved_key:
             raise ValueError("ERR-004: Gemini API Key 未提供")
 
-        # 💡 使用當前穩定的 Gemini 1.5 Flash 模型
-        self.model_name = "gemini-1.5-flash"
+        self.model_name = model_name
         self.api_key = resolved_key
 
-        # 嘗試初始化 google-genai 客戶端（新版結構）
-        self.genai_client = None
         try:
-            if hasattr(genai, "Client"):
-                self.genai_client = genai.Client(api_key=resolved_key)
-                logger.info("Initialized genai.Client successfully")
-            elif hasattr(genai, "configure"):
-                genai.configure(api_key=resolved_key)
-                logger.info("Initialized via genai.configure()")
-            else:
-                import os
-                os.environ["GENAI_API_KEY"] = resolved_key
-                logger.info("Set GENAI_API_KEY environment variable")
-        except Exception as e:
-            logger.warning(f"Failed to initialize google-genai client: {e}. Will use REST API.")
-            import os
-            os.environ["GENAI_API_KEY"] = resolved_key
-
-        # 使用新 google-genai API，模型名稱需要 "models/" 前綴
-        model_name_full = "models/gemini-1.5-flash"
-
-        # 建立一個兼容層：GenaiModelWrapper
-        class GenaiModelWrapper:
-            def __init__(self, genai_mod, genai_client_obj, model_name, system_instruction, api_key):
-                self.genai = genai_mod
-                self.genai_client = genai_client_obj
-                self.model_name = model_name
-                self.system_instruction = system_instruction
-                self.api_key = api_key
-
-            def _unwrap_text(self, resp):
-                # normalize various response shapes to a simple object with .text
-                if resp is None:
-                    return ""
-                # dataclass-like or object with .text
-                if hasattr(resp, "text") and isinstance(resp.text, str):
-                    return resp.text
-                # object with 'candidates' or 'outputs'
-                if hasattr(resp, "candidates"):
-                    try:
-                        c = resp.candidates
-                        if isinstance(c, (list, tuple)) and len(c) > 0:
-                            first = c[0]
-                            # candidate may have 'content' or 'text'
-                            if hasattr(first, "content"):
-                                return first.content
-                            if hasattr(first, "text"):
-                                return first.text
-                    except Exception:
-                        pass
-                # dict-like
-                try:
-                    if isinstance(resp, dict):
-                        # common shapes
-                        if "candidates" in resp and isinstance(resp["candidates"], (list, tuple)) and len(resp["candidates"])>0:
-                            cand = resp["candidates"][0]
-                            if isinstance(cand, dict):
-                                content_val = cand.get("content") or cand.get("text") or ""
-                                # if content_val is dict, try to extract text
-                                if isinstance(content_val, dict) and "parts" in content_val:
-                                    parts = content_val["parts"]
-                                    if isinstance(parts, (list, tuple)) and len(parts) > 0:
-                                        return parts[0].get("text", "")
-                                return content_val
-                        if "output" in resp and isinstance(resp["output"], str):
-                            return resp["output"]
-                        if "text" in resp and isinstance(resp["text"], str):
-                            return resp["text"]
-                except Exception:
-                    pass
-                # fallback to string conversion
-                try:
-                    return str(resp)
-                except Exception:
-                    return ""
-
-            def generate_content(self, prompt: str):
-                # 1) 嘗試 genai_client 方法 (新版 google-genai SDK)
-                if self.genai_client is not None:
-                    for method_name in ("generate_content", "generate", "create", "messages_create"):
-                        try:
-                            if hasattr(self.genai_client, method_name):
-                                method = getattr(self.genai_client, method_name)
-                                resp = None
-                                try:
-                                    resp = method(model=self.model_name, prompt=prompt)
-                                except TypeError:
-                                    try:
-                                        resp = method(prompt)
-                                    except Exception:
-                                        pass
-                                if resp is not None:
-                                    text = self._unwrap_text(resp)
-                                    if text:
-                                        class R: pass
-                                        r = R()
-                                        r.text = text
-                                        return r
-                        except Exception as e:
-                            logger.debug(f"genai_client.{method_name} failed: {e}")
-
-                # 2) 嘗試直接從 genai 模組的方法
-                for method_name in ("generate_content", "generate", "generate_text"):
-                    try:
-                        if hasattr(self.genai, method_name):
-                            method = getattr(self.genai, method_name)
-                            resp = None
-                            try:
-                                resp = method(model=self.model_name, prompt=prompt)
-                            except TypeError:
-                                try:
-                                    resp = method(prompt)
-                                except Exception:
-                                    pass
-                            if resp is not None:
-                                text = self._unwrap_text(resp)
-                                if text:
-                                    class R: pass
-                                    r = R()
-                                    r.text = text
-                                    return r
-                    except Exception as e:
-                        logger.debug(f"genai.{method_name} failed: {e}")
-
-                # 3) REST API 回退 (使用 Gemini API REST endpoint)
-                try:
-                    import requests
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
-                    payload_json = {
-                        "systemInstruction": {"parts": [{"text": self.system_instruction}]},
-                        "contents": [{"parts": [{"text": prompt}]}],
-                        "generationConfig": {
-                            "responseMimeType": "application/json",
-                            "temperature": 0.1,
-                            "maxOutputTokens": 8192
-                        }
-                    }
-                    headers = {"Content-Type": "application/json"}
-                    response = requests.post(url, json=payload_json, headers=headers, timeout=30)
-                    if response.status_code == 200:
-                        resp_json = response.json()
-                        if "candidates" in resp_json and len(resp_json["candidates"]) > 0:
-                            content = resp_json["candidates"][0].get("content", {})
-                            if "parts" in content and len(content["parts"]) > 0:
-                                text = content["parts"][0].get("text", "")
-                                if text:
-                                    class R: pass
-                                    r = R()
-                                    r.text = text
-                                    return r
-                    else:
-                        err_detail = response.text[:300] if response.text else str(response.status_code)
-                        logger.debug(f"REST API returned status {response.status_code}: {err_detail}")
-                except Exception as e:
-                    logger.debug(f"REST API fallback failed: {e}")
-
-                # 4) 若所有方法都失敗，記錄可用屬性並拋出異常
-                available_attrs = [attr for attr in dir(self.genai) if not attr.startswith("_")]
-                available_client_attrs = [attr for attr in dir(self.genai_client) if not attr.startswith("_")] if self.genai_client else []
-                raise RuntimeError(f"GenAI: no working method. genai attrs={available_attrs[:15]}, client attrs={available_client_attrs[:15]}")
-
-        # 建立 wrapper 實例供後續呼叫
-        self.model = GenaiModelWrapper(genai, self.genai_client, model_name_full, SYSTEM_PROMPT, resolved_key)
-        logger.info(f"LLMProcessor initialized with Gemini 1.5 Flash model")
+            # 確保使用最新版 google-genai 的正確導入方式
+            from google import genai
+            from google.genai import types
+            self.client = genai.Client(api_key=self.api_key)
+            self.types = types
+            logger.info("LLMProcessor initialized with Gemini 1.5 Flash model successfully")
+        except ImportError as e:
+            logger.error(f"ImportError: {e}")
+            raise RuntimeError("找不到 google-genai 套件，請確認 requirements.txt 中已包含 google-genai")
 
     def process_ocr_texts(self, ocr_texts: List[str]) -> Dict[str, Any]:
         """
         將 OCR 擷取的文字陣列送入 Gemini LLM 進行清洗、翻譯與結構化。
-
-        :param ocr_texts: PaddleOCR 擷取的文字字串列表
-        :return:          符合 JSON Schema 的結構化字典
-        :raises ValueError: ERR-003（JSON 解析失敗）或 ERR-004（API 呼叫異常）
         """
         ocr_block = "\n".join(ocr_texts)
-        # 系統提示已在模型初始化時設置，只需要提供 OCR 文本即可
         user_prompt = "以下是由 PaddleOCR 傳入的發票原始文字陣列，請依上述規則進行結構化：\n" + ocr_block
 
         logger.info(
             f"Sending {len(ocr_texts)} OCR text blocks to Gemini 1.5 Flash..."
         )
+        
         response_text = ""
         try:
-            response = self.model.generate_content(user_prompt)
+            # 新版 SDK 的標準呼叫方式，直接將系統提示詞放入 config 中
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=user_prompt,
+                config=self.types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.1,
+                    response_mime_type="application/json"
+                )
+            )
+            
             response_text = response.text
 
             # 清除可能殘留的 Markdown 標記（防禦性處理）
@@ -314,6 +164,6 @@ class LLMProcessor:
             logger.error(f"LLM API error: {err_str}")
             # ERR-003 re-raise from retry logic
             if "ERR-003" in err_str:
-                raise
+                raise ValueError("ERR-003: Gemini JSON 輸出格式損毀") from e
             # ERR-004: API key / quota issues
             raise ValueError(f"ERR-004: Gemini API 呼叫失敗 — {err_str}") from e

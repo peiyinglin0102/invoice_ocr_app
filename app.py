@@ -19,11 +19,8 @@ import llm_processor
 import finance_utils
 import db_manager
 
-# Force reload custom modules to completely bypass Streamlit's sticky in-memory cache!
-importlib.reload(ocr_engine)
-importlib.reload(llm_processor)
-importlib.reload(finance_utils)
-importlib.reload(db_manager)
+# Note: Removed importlib.reload() calls as they cause issues when initial imports fail
+# Streamlit handles module reloading automatically
 
 from ocr_engine import InvoiceOCREngine
 from llm_processor import LLMProcessor

@@ -97,58 +97,37 @@ class LLMProcessor:
 
         # 💡 使用當前穩定的 Gemini 1.5 Flash 模型
         self.model_name = "gemini-1.5-flash"
+        self.api_key = resolved_key
 
-        # 兼容不同版本的 google-genai 用法：
-        # - 早期版本可能支援 genai.configure(api_key=...)
-        # - 新版可能需要 genai.Client(api_key=...)
-        # - 若皆無，則回退為設定環境變數 `GENAI_API_KEY`
-        client = None
+        # 嘗試初始化 google-genai 客戶端（新版結構）
+        self.genai_client = None
         try:
-          if hasattr(genai, "configure"):
-            genai.configure(api_key=resolved_key)
-          elif hasattr(genai, "Client"):
-            client = genai.Client(api_key=resolved_key)
-          else:
+            if hasattr(genai, "Client"):
+                self.genai_client = genai.Client(api_key=resolved_key)
+                logger.info("Initialized genai.Client successfully")
+            elif hasattr(genai, "configure"):
+                genai.configure(api_key=resolved_key)
+                logger.info("Initialized via genai.configure()")
+            else:
+                import os
+                os.environ["GENAI_API_KEY"] = resolved_key
+                logger.info("Set GENAI_API_KEY environment variable")
+        except Exception as e:
+            logger.warning(f"Failed to initialize google-genai client: {e}. Will use REST API.")
             import os
             os.environ["GENAI_API_KEY"] = resolved_key
-        except Exception as e:
-          logger.warning(f"Failed to auto-configure google-genai: {e}. Falling back to env var.")
-          import os
-          os.environ["GENAI_API_KEY"] = resolved_key
 
         # 使用新 google-genai API，模型名稱需要 "models/" 前綴
         model_name_full = "models/gemini-1.5-flash"
-        self.api_key = resolved_key
 
         # 建立一個兼容層：GenaiModelWrapper
         class GenaiModelWrapper:
-            def __init__(self, genai_mod, client_obj, model_name, system_instruction, api_key):
+            def __init__(self, genai_mod, genai_client_obj, model_name, system_instruction, api_key):
                 self.genai = genai_mod
-                self.client = client_obj
+                self.genai_client = genai_client_obj
                 self.model_name = model_name
                 self.system_instruction = system_instruction
                 self.api_key = api_key
-
-                # 嘗試建立一個原生 model instance（若可用）
-                self.native_model = None
-                try:
-                    if hasattr(self.genai, "GenerativeModel"):
-                        gen_config = None
-                        if hasattr(self.genai, "types") and hasattr(self.genai.types, "GenerationConfig"):
-                            gen_config = self.genai.types.GenerationConfig(
-                                response_mime_type="application/json",
-                                temperature=0.1,
-                                max_output_tokens=8192,
-                            )
-                        kwargs = {"model_name": self.model_name, "system_instruction": self.system_instruction}
-                        if gen_config is not None:
-                            kwargs["generation_config"] = gen_config
-                        if client_obj is not None:
-                            kwargs["client"] = client_obj
-                        self.native_model = self.genai.GenerativeModel(**kwargs)
-                except Exception as e:
-                    logger.debug(f"Failed to create native GenerativeModel: {e}")
-                    self.native_model = None
 
             def _unwrap_text(self, resp):
                 # normalize various response shapes to a simple object with .text
@@ -177,7 +156,13 @@ class LLMProcessor:
                         if "candidates" in resp and isinstance(resp["candidates"], (list, tuple)) and len(resp["candidates"])>0:
                             cand = resp["candidates"][0]
                             if isinstance(cand, dict):
-                                return cand.get("content") or cand.get("text") or ""
+                                content_val = cand.get("content") or cand.get("text") or ""
+                                # if content_val is dict, try to extract text
+                                if isinstance(content_val, dict) and "parts" in content_val:
+                                    parts = content_val["parts"]
+                                    if isinstance(parts, (list, tuple)) and len(parts) > 0:
+                                        return parts[0].get("text", "")
+                                return content_val
                         if "output" in resp and isinstance(resp["output"], str):
                             return resp["output"]
                         if "text" in resp and isinstance(resp["text"], str):
@@ -191,39 +176,52 @@ class LLMProcessor:
                     return ""
 
             def generate_content(self, prompt: str):
-                # 1) 原生 model（若存在）
-                if self.native_model is not None and hasattr(self.native_model, "generate_content"):
-                    try:
-                        return self.native_model.generate_content(prompt)
-                    except Exception as e:
-                        logger.debug(f"Native GenerativeModel.generate_content failed: {e}")
+                # 1) 嘗試 genai_client 方法 (新版 google-genai SDK)
+                if self.genai_client is not None:
+                    for method_name in ("generate_content", "generate", "create", "messages_create"):
+                        try:
+                            if hasattr(self.genai_client, method_name):
+                                method = getattr(self.genai_client, method_name)
+                                resp = None
+                                try:
+                                    resp = method(model=self.model_name, prompt=prompt)
+                                except TypeError:
+                                    try:
+                                        resp = method(prompt)
+                                    except Exception:
+                                        pass
+                                if resp is not None:
+                                    text = self._unwrap_text(resp)
+                                    if text:
+                                        class R: pass
+                                        r = R()
+                                        r.text = text
+                                        return r
+                        except Exception as e:
+                            logger.debug(f"genai_client.{method_name} failed: {e}")
 
-                # 2) client-level calls (嘗試多種可能的方法名)
-                c = self.client or self.genai
-                # 將 prompt 與 system_instruction 組成最小 payload
-                payload = {"prompt": prompt, "model": self.model_name}
-                # try generate_content
-                for method_name in ("generate_content", "generate", "generate_text", "text_generation", "generate_text_unified"):
+                # 2) 嘗試直接從 genai 模組的方法
+                for method_name in ("generate_content", "generate", "generate_text"):
                     try:
-                        if hasattr(c, method_name):
-                            method = getattr(c, method_name)
+                        if hasattr(self.genai, method_name):
+                            method = getattr(self.genai, method_name)
                             resp = None
-                            # 某些 API 接受 (model=..., prompt=...)
                             try:
                                 resp = method(model=self.model_name, prompt=prompt)
                             except TypeError:
                                 try:
                                     resp = method(prompt)
                                 except Exception:
-                                    resp = method(payload)
-                            text = self._unwrap_text(resp)
-                            class R: pass
-                            r = R()
-                            r.text = text
-                            return r
+                                    pass
+                            if resp is not None:
+                                text = self._unwrap_text(resp)
+                                if text:
+                                    class R: pass
+                                    r = R()
+                                    r.text = text
+                                    return r
                     except Exception as e:
-                        logger.debug(f"Method {method_name} failed: {e}")
-                        continue
+                        logger.debug(f"genai.{method_name} failed: {e}")
 
                 # 3) REST API 回退 (使用 Gemini API REST endpoint)
                 try:
@@ -246,21 +244,24 @@ class LLMProcessor:
                             content = resp_json["candidates"][0].get("content", {})
                             if "parts" in content and len(content["parts"]) > 0:
                                 text = content["parts"][0].get("text", "")
-                                class R: pass
-                                r = R()
-                                r.text = text
-                                return r
+                                if text:
+                                    class R: pass
+                                    r = R()
+                                    r.text = text
+                                    return r
                     else:
-                        logger.debug(f"REST API returned status {response.status_code}: {response.text[:200]}")
+                        err_detail = response.text[:300] if response.text else str(response.status_code)
+                        logger.debug(f"REST API returned status {response.status_code}: {err_detail}")
                 except Exception as e:
                     logger.debug(f"REST API fallback failed: {e}")
 
                 # 4) 若所有方法都失敗，記錄可用屬性並拋出異常
                 available_attrs = [attr for attr in dir(self.genai) if not attr.startswith("_")]
-                raise RuntimeError(f"No supported generate method found. Available attributes: {available_attrs[:10]}")
+                available_client_attrs = [attr for attr in dir(self.genai_client) if not attr.startswith("_")] if self.genai_client else []
+                raise RuntimeError(f"GenAI: no working method. genai attrs={available_attrs[:15]}, client attrs={available_client_attrs[:15]}")
 
         # 建立 wrapper 實例供後續呼叫
-        self.model = GenaiModelWrapper(genai, client, model_name_full, SYSTEM_PROMPT, resolved_key)
+        self.model = GenaiModelWrapper(genai, self.genai_client, model_name_full, SYSTEM_PROMPT, resolved_key)
         logger.info(f"LLMProcessor initialized with Gemini 1.5 Flash model")
 
     def process_ocr_texts(self, ocr_texts: List[str]) -> Dict[str, Any]:

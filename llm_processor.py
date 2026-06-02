@@ -109,18 +109,19 @@ class LLMProcessor:
             f"Sending {len(ocr_texts)} OCR text blocks to Gemini via REST API..."
         )
         
-        # 嘗試多個 API 版本和模型名稱
+        # 嘗試多個 API 版本和模型名稱，並用不同的 payload 結構
         api_configs = [
-            ("v1", "gemini-1.5-flash"),
-            ("v1beta", "gemini-1.5-flash"),
-            ("v1", "gemini-pro"),
-            ("v1", "gemini-2.0-flash"),
+            ("v1beta", "gemini-1.5-flash", "camelCase"),
+            ("v1", "gemini-1.5-flash", "snake_case"),
+            ("v1", "gemini-pro", "snake_case"),
+            ("v1", "gemini-2.0-flash", "snake_case"),
+            ("v1beta", "gemini-pro", "camelCase"),
         ]
         
         response_text = ""
         last_error = None
         
-        for api_version, model_name in api_configs:
+        for api_version, model_name, field_format in api_configs:
             try:
                 url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:generateContent?key={self.api_key}"
                 
@@ -128,20 +129,35 @@ class LLMProcessor:
                     "Content-Type": "application/json"
                 }
                 
-                payload = {
-                    "systemInstruction": {
-                        "parts": [{"text": SYSTEM_PROMPT}]
-                    },
-                    "contents": [
-                        {"parts": [{"text": user_prompt}]}
-                    ],
-                    "generationConfig": {
-                        "temperature": 0.1,
-                        "responseMimeType": "application/json"
+                # 根據 API 版本構建不同的 payload 結構
+                if field_format == "camelCase":
+                    payload = {
+                        "systemInstruction": {
+                            "parts": [{"text": SYSTEM_PROMPT}]
+                        },
+                        "contents": [
+                            {"parts": [{"text": user_prompt}]}
+                        ],
+                        "generationConfig": {
+                            "temperature": 0.1,
+                            "responseMimeType": "application/json"
+                        }
                     }
-                }
+                else:  # snake_case - 簡化版本，某些字段可能不被所有版本支援
+                    payload = {
+                        "contents": [
+                            {
+                                "role": "user",
+                                "parts": [{"text": SYSTEM_PROMPT + "\n\n" + user_prompt}]
+                            }
+                        ],
+                        "generation_config": {
+                            "temperature": 0.1,
+                            "max_output_tokens": 8192
+                        }
+                    }
                 
-                logger.debug(f"Trying REST API: {api_version}/{model_name}")
+                logger.debug(f"Trying REST API: {api_version}/{model_name} ({field_format})")
                 response = requests.post(url, headers=headers, json=payload, timeout=30)
                 
                 if response.status_code == 200:
@@ -149,8 +165,17 @@ class LLMProcessor:
                     
                     if "candidates" not in resp_json or not resp_json["candidates"]:
                         raise ValueError("API 沒有回傳有效的 candidates 內容")
-                        
-                    response_text = resp_json["candidates"][0]["content"]["parts"][0]["text"]
+                    
+                    # 嘗試提取文字 - 處理不同的回應結構
+                    response_text = ""
+                    try:
+                        response_text = resp_json["candidates"][0]["content"]["parts"][0]["text"]
+                    except (KeyError, IndexError, TypeError):
+                        # 備用方案：嘗試 output 字段
+                        try:
+                            response_text = resp_json["candidates"][0].get("output", "")
+                        except:
+                            raise ValueError("無法從 API 回應中提取文字")
 
                     # 清除可能殘留的 Markdown 標記（防禦性處理）
                     response_text = (
@@ -169,7 +194,7 @@ class LLMProcessor:
                         logger.warning(f"LLM response missing keys: {missing}")
                         raise json.JSONDecodeError(f"Missing keys: {missing}", response_text, 0)
 
-                    logger.info(f"✅ Successfully used REST API: {api_version}/{model_name}")
+                    logger.info(f"✅ Successfully used REST API: {api_version}/{model_name} ({field_format})")
                     return result_dict
                 else:
                     err_msg = f"HTTP {response.status_code}"
@@ -178,10 +203,14 @@ class LLMProcessor:
                         if "error" in err_json:
                             err_msg = err_json["error"].get("message", err_msg)
                     except:
-                        err_msg = response.text[:200]
+                        err_msg = response.text[:300]
                     logger.debug(f"API {api_version}/{model_name} failed: {err_msg}")
                     last_error = err_msg
                     
+            except json.JSONDecodeError as e:
+                logger.debug(f"JSON parse error with {api_version}/{model_name}: {e}")
+                last_error = f"JSON parse error: {str(e)}"
+                continue
             except Exception as e:
                 logger.debug(f"API {api_version}/{model_name} exception: {e}")
                 last_error = str(e)
@@ -189,3 +218,4 @@ class LLMProcessor:
         
         # 所有配置都失敗
         raise ValueError(f"ERR-004: Gemini API 呼叫失敗 — 所有模型配置均不可用。最後錯誤: {last_error}")
+

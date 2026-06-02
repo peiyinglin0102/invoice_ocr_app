@@ -1,5 +1,4 @@
 streamlit>=1.32.0
-opencv-python-headless
 paddleocr==2.8.1
 paddlepaddle==2.6.2
 numpy==1.26.4
@@ -15,3 +14,5 @@ python-multipart>=0.0.9
 pymongo>=4.6.0
 dnspython>=2.6.0
 
+# 💡 終極解套：強迫覆蓋 PaddleOCR 的流氓依賴
+opencv-python-headless==4.11.0.86

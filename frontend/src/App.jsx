@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback, useMemo } from 'react';
 import {
   UploadCloud, Loader2, FileText, CheckCircle,
   AlertCircle, RefreshCw, Download, Copy, ChevronUp, ChevronDown,
+  Receipt, Settings, ClipboardList, ShoppingCart, PieChart, DownloadCloud
 } from 'lucide-react';
 import Plot from 'react-plotly.js';
 
@@ -10,38 +11,38 @@ import Plot from 'react-plotly.js';
 // ─────────────────────────────────────────────
 const BACKEND_URL = 'http://localhost:8000';
 
-CATEGORY_COLORS = {
-    "餐飲": "#FC8181",
-    "超商/超市": "#F6AD55",
-    "伴手禮/土特產": "#ED8936",
-    "零食/飲料": "#ED64A6",
-    "藥妝/美妝": "#63B3ED",
-    "醫療保健": "#68D391",
-    "服飾/鞋包": "#B794F4",
-    "精品/奢侈品": "#9F7AEA",
-    "動漫/玩具/周邊": "#4FD1C5",
-    "居家/生活用品": "#319795",
-    "電子產品/3C": "#4299E1",
-    "交通": "#ECC94B",
-    "住宿": "#5A67D8",
-    "門票/娛樂": "#667EEA",
-    "稅金/服務費": "#A0AEC0",
-    "免稅/折扣": "#F56565",
-    "文具/書籍": "#ED8936",
-    "其他": "#CBD5E0",
+const CATEGORY_COLORS = {
+    '餐飲': '#FC8181',
+    '超商/超市': '#F6AD55',
+    '伴手禮/土特產': '#ED8936',
+    '零食/飲料': '#ED64A6',
+    '藥妝/美妝': '#63B3ED',
+    '醫療保健': '#68D391',
+    '服飾/鞋包': '#B794F4',
+    '精品/奢侈品': '#9F7AEA',
+    '動漫/玩具/周邊': '#4FD1C5',
+    '居家/生活用品': '#319795',
+    '電子產品/3C': '#4299E1',
+    '交通': '#ECC94B',
+    '住宿': '#5A67D8',
+    '門票/娛樂': '#667EEA',
+    '稅金/服務費': '#A0AEC0',
+    '免稅/折扣': '#F56565',
+    '文具/書籍': '#ED8936',
+    '其他': '#CBD5E0',
 }
 
 const STAGES = [
-  { id: 1, label: '🔍 正在辨識發票文字...', from: 0,  to: 33  },
-  { id: 2, label: '🤖 AI 正在分析品項並翻譯...', from: 33, to: 66  },
-  { id: 3, label: '💱 正在查詢歷史匯率並換算...', from: 66, to: 100 },
+  { id: 1, label: '正在辨識發票文字...', from: 0,  to: 33  },
+  { id: 2, label: '正在分析品項並整理資料...', from: 33, to: 66  },
+  { id: 3, label: '正在查詢歷史匯率並換算...', from: 66, to: 100 },
 ];
 
 const OCR_LANGS = [
-  { value: 'japan',  label: '🇯🇵 日文 (Japanese)' },
-  { value: 'korean', label: '🇰🇷 韓文 (Korean)' },
-  { value: 'en',     label: '🇬🇧 英文 (English)' },
-  { value: 'ch',     label: '🇨🇳 中文 (Chinese)' },
+  { value: 'japan',  label: '日文 (Japanese)' },
+  { value: 'korean', label: '韓文 (Korean)' },
+  { value: 'en',     label: '英文 (English)' },
+  { value: 'ch',     label: '中文 (Chinese)' },
 ];
 
 // ─────────────────────────────────────────────
@@ -62,7 +63,7 @@ function fmtNumber(n) {
 
 // Build UTF-8 BOM CSV for Excel compatibility
 function buildCsv(items, currency) {
-  const BOM = '\uFEFF';
+  const BOM = '﻿';
   const headers = ['原始文字', '品項翻譯', `單價(${currency})`, '數量', '稅務標記', '分類', '台幣小計(NT$)'];
   const rows = items.map(it => [
     `"${(it.original_name  || '').replace(/"/g, '""')}"`,
@@ -73,7 +74,8 @@ function buildCsv(items, currency) {
     `"${it.category || ''}"`,
     it.twd_subtotal,
   ].join(','));
-  return BOM + [headers.join(','), ...rows].join('\n');
+  return BOM + [headers.join(','), ...rows].join('
+');
 }
 
 function downloadBlob(content, filename, mime) {
@@ -290,11 +292,11 @@ export default function App() {
     if (!f) return;
     const allowed = ['image/jpeg', 'image/png', 'image/webp'];
     if (!allowed.includes(f.type)) {
-      setError('ERR-001：不支援的檔案格式，請上傳 JPG、PNG 或 WebP。');
+      setError('不支援的檔案格式，請上傳 JPG、PNG 或 WebP。');
       return;
     }
     if (f.size > 10 * 1024 * 1024) {
-      setError('ERR-001：檔案大小超過 10MB 上限，請壓縮後重新上傳。');
+      setError('檔案大小超過 10MB 上限，請壓縮後重新上傳。');
       return;
     }
     setError(null);
@@ -315,7 +317,6 @@ export default function App() {
     if (e.target.files?.[0]) applyFile(e.target.files[0]);
   };
 
-  // Context menu prevention (long-press on mobile)
   const handleContextMenu = (e) => e.preventDefault();
 
   // ── Process Invoice ──
@@ -332,16 +333,15 @@ export default function App() {
     formData.append('ocr_lang', ocrLang);
 
     try {
-      // Simulate stage transitions for UX
       await delay(300);
-      setStage(1);   // LLM stage
+      setStage(1);
 
       const res = await fetch(`${BACKEND_URL}/api/process_invoice`, {
         method: 'POST',
         body: formData,
       });
 
-      setStage(2);   // Finance stage
+      setStage(2);
       await delay(200);
 
       if (!res.ok) {
@@ -355,7 +355,7 @@ export default function App() {
 
       if (json.data.is_fallback_rate) {
         setWarning(
-          `⚠️ ERR-005：yfinance 匯率查詢失敗，目前使用估算匯率（1 ${json.data.currency} ≈ ${json.data.exchange_rate.toFixed(4)} TWD），數據僅供參考。`
+          `即時匯率查詢失敗，目前使用估算匯率（1 ${json.data.currency} ≈ ${json.data.exchange_rate.toFixed(4)} TWD），數據僅供參考。`
         );
       }
 
@@ -365,17 +365,17 @@ export default function App() {
       setStage(-1);
       const msg = err.message || '未知錯誤';
       if (msg.includes('ERR-004') || msg.includes('API') || msg.includes('401')) {
-        setError(`❌ ERR-004：Gemini API 驗證失敗，請確認 API Key 是否正確。`);
+        setError(`系統授權失敗，請確認 API Key 是否正確。`);
       } else if (msg.includes('ERR-003')) {
-        setError(`❌ ERR-003：AI 回傳的 JSON 格式損毀，已重試仍失敗，請稍後再試。`);
+        setError(`系統處理資料時發生異常，已重試仍失敗，請稍後再試。`);
       } else if (msg.includes('ERR-002')) {
-        setError(`❌ ERR-002：OCR 無法提取任何文字，圖片可能過於模糊，請重新拍攝。`);
+        setError(`無法提取圖片中的文字。圖片可能過於模糊或角度不佳，請重新拍攝。`);
       } else if (msg.includes('ERR-001')) {
-        setError(`❌ ERR-001：${msg}`);
+        setError(`${msg.replace('ERR-001：', '')}`);
       } else if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-        setError(`❌ 無法連線至後端伺服器（localhost:8000），請確認 FastAPI 服務已啟動。`);
+        setError(`無法連線至後端伺服器，請確認 FastAPI 服務已啟動。`);
       } else {
-        setError(`❌ 系統錯誤：${msg}`);
+        setError(`系統錯誤：${msg}`);
       }
     }
   };
@@ -407,15 +407,19 @@ export default function App() {
     <div className="app-container">
       {/* ── Header ── */}
       <header className="app-header">
-        <h1>🧾 AI 智能外幣發票理財系統</h1>
-        <p>拍照上傳發票，AI 自動辨識、翻譯、分類，即時換算台幣消費金額。</p>
+        <h1 style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
+          <Receipt size={28} /> 智能外幣發票理財系統
+        </h1>
+        <p>拍照上傳發票，系統自動辨識、翻譯、分類，即時換算台幣消費金額。</p>
       </header>
 
       <div className="layout-grid">
         {/* ══ SIDEBAR ══ */}
         <aside className="sidebar">
           <div className="glass-card">
-            <h2 className="card-title">⚙️ 系統設定</h2>
+            <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Settings size={20} /> 系統設定
+            </h2>
 
             {/* API Key */}
             <div className="form-group">
@@ -455,7 +459,9 @@ export default function App() {
 
             {/* Usage guide */}
             <div style={{ marginTop: '0.5rem' }}>
-              <p className="form-label" style={{ marginBottom: '0.75rem' }}>📋 使用說明</p>
+              <p className="form-label" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <ClipboardList size={16} /> 使用說明
+              </p>
               <ol className="usage-guide">
                 {['輸入 Gemini API Key', '選擇發票語系', '上傳發票圖片', '點擊「開始辨識」', '查看分析報告並匯出'].map((txt, i) => (
                   <li key={i}>
@@ -471,7 +477,9 @@ export default function App() {
         {/* ══ MAIN PANEL ══ */}
         <main>
           <div className="glass-card">
-            <h2 className="card-title">📤 上傳發票圖片</h2>
+            <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <UploadCloud size={20} /> 上傳發票圖片
+            </h2>
 
             {/* Upload Zone */}
             <div
@@ -492,7 +500,6 @@ export default function App() {
               <p className="main-text">點擊選擇或拖曳圖片至此</p>
               <p className="sub-text">支援 JPG / PNG / WebP｜最大 10 MB｜行動裝置可直接拍照</p>
 
-              {/* Hidden input — covers entire zone for touch; iOS camera support via accept + capture */}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -539,8 +546,8 @@ export default function App() {
               aria-label={isProcessing ? '辨識處理中，請稍候' : '開始辨識發票'}
             >
               {isProcessing
-                ? <><Loader2 size={18} className="spinner" /> 辨識中，請稍候...</>
-                : <><RefreshCw size={18} /> 🔍 開始辨識</>
+                ? <><Loader2 size={18} className="spinner" /> 處理中，請稍候...</>
+                : <><RefreshCw size={18} /> 開始辨識</>
               }
             </button>
 
@@ -551,7 +558,7 @@ export default function App() {
             {result && !isProcessing && (
               <div className="alert alert-success" role="status" style={{ marginTop: '1rem' }}>
                 <CheckCircle size={16} style={{ flexShrink: 0 }} />
-                <span>✅ 發票辨識與分析已完成！請查看下方財務報告。</span>
+                <span>發票辨識與分析已完成！請查看下方財務報告。</span>
               </div>
             )}
           </div>
@@ -562,24 +569,26 @@ export default function App() {
 
               {/* Financial Report Card */}
               <div className="glass-card">
-                <h2 className="card-title"><FileText size={20} /> 📊 財務分析報告</h2>
+                <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <FileText size={20} /> 財務分析報告
+                </h2>
 
                 {/* Metrics — 4 columns */}
                 <div className="metrics-grid">
                   <MetricCard
-                    label="📅 消費日期"
+                    label="消費日期"
                     value={result.invoice_date || '—'}
                   />
                   <MetricCard
-                    label="💴 外幣總額"
+                    label="外幣總額"
                     value={`${fmtNumber(result.total_foreign_amount)} ${result.currency}`}
                   />
                   <MetricCard
-                    label="📈 適用匯率"
+                    label="適用匯率"
                     value={result.exchange_rate.toFixed(4)}
                   />
                   <MetricCard
-                    label="🏦 台幣總花費"
+                    label="台幣總花費"
                     value={`NT$ ${fmtNumber(result.total_twd)}`}
                     highlight
                   />
@@ -588,19 +597,25 @@ export default function App() {
 
               {/* Items Table */}
               <div className="glass-card">
-                <h2 className="card-title">🛒 購買明細表格</h2>
+                <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <ShoppingCart size={20} /> 購買明細表格
+                </h2>
                 <ItemsTable items={result.items} currency={result.currency} />
               </div>
 
               {/* Pie Chart */}
               <div className="glass-card">
-                <h2 className="card-title">🥧 本次消費分類比例</h2>
+                <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <PieChart size={20} /> 本次消費分類比例
+                </h2>
                 <CategoryPie items={result.items} />
               </div>
 
               {/* Export */}
               <div className="glass-card">
-                <h2 className="card-title">💾 匯出報告</h2>
+                <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <DownloadCloud size={20} /> 匯出報告
+                </h2>
                 <div className="export-grid">
                   <button className="btn-export" onClick={exportCsv} aria-label="下載 CSV 報告">
                     <Download size={16} /> 下載 CSV（Excel 相容）

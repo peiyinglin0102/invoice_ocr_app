@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-# Force reload: 3
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -13,47 +11,27 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import importlib
-import ocr_engine
-import llm_processor
-import finance_utils
-import db_manager
-
-# Note: Removed importlib.reload() calls as they cause issues when initial imports fail
-# Streamlit handles module reloading automatically
-
 from ocr_engine import InvoiceOCREngine
 from llm_processor import LLMProcessor
 from finance_utils import FinanceUtils
 from db_manager import DatabaseManager
 
-# ─────────────────────────────────────────────
-# Initialize Database Manager
-# ─────────────────────────────────────────────
 db = DatabaseManager()
 
-# ─────────────────────────────────────────────
-# Page Config
-# ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="AI 智能外幣發票理財系統",
+    page_title="智能外幣發票理財系統",
     layout="wide",
-    page_icon="🧾",
+    page_icon=":material/receipt_long:",
 )
 
-# ─────────────────────────────────────────────
-# Global CSS + Mobile/Touch Injections
-# ─────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ── Google Font ── */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 html, body, [class*="css"] {
     font-family: 'Inter', sans-serif;
 }
 
-/* ── All buttons ≥ 48px tall (WCAG 2.5.5 AA) ── */
 button[kind="primary"], button[kind="secondary"] {
     min-height: 48px !important;
     font-size: 1rem !important;
@@ -63,7 +41,6 @@ button[kind="primary"]:active {
     transform: scale(0.97);
 }
 
-/* ── Dataframe horizontal scroll on mobile ── */
 [data-testid="stDataFrame"] > div {
     overflow-x: auto !important;
     touch-action: pan-x !important;
@@ -75,7 +52,6 @@ button[kind="primary"]:active {
     min-height: 44px !important;
 }
 
-/* ── Upload zone: ensure entire area is clickable ── */
 [data-testid="stFileUploader"] > label {
     min-height: 48px !important;
     width: 100% !important;
@@ -88,18 +64,15 @@ button[kind="primary"]:active {
     display: none;
 }
 
-/* ── Error messages ≥ 14px ── */
 [data-testid="stAlert"] p {
     font-size: 14px !important;
 }
 
-/* ── Uploaded image responsive ── */
 [data-testid="stImage"] img {
     max-width: 100% !important;
     height: auto !important;
 }
 
-/* ── Metric card TWD highlight ── */
 .twd-highlight {
     font-size: 1.6rem;
     font-weight: 700;
@@ -114,16 +87,13 @@ button[kind="primary"]:active {
 </style>
 
 <script>
-// Inject accept + capture on file inputs for iOS Safari camera support
 function patchFileInputs() {
     const inputs = document.querySelectorAll('input[type="file"]');
     inputs.forEach(function(input) {
         input.setAttribute('accept', 'image/*');
-        // capture='environment' opens rear camera on mobile
         input.setAttribute('capture', 'environment');
     });
 }
-// Run on load and whenever DOM updates
 document.addEventListener('DOMContentLoaded', function() {
     patchFileInputs();
     const observer = new MutationObserver(patchFileInputs);
@@ -132,9 +102,6 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-# Session State Initialization
-# ─────────────────────────────────────────────
 if 'api_key' not in st.session_state:
     st.session_state.api_key = ""
 if 'active_trip_id' not in st.session_state:
@@ -148,20 +115,11 @@ if 'warning_msg' not in st.session_state:
 if 'info_msg' not in st.session_state:
     st.session_state.info_msg = None
 
-# ─────────────────────────────────────────────
-# Sidebar – Settings Panel & Trip Management
-# ─────────────────────────────────────────────
 with st.sidebar:
-    st.title("⚙️ 系統設定")
-
-    # 1. Database indicator
-    if db.use_mongodb:
-        st.success("☁️ 雲端資料庫：MongoDB Atlas 已連線")
-    else:
-        st.info("📂 本地資料庫：使用 `local_db.json` 持久化儲存")
+    st.title(":material/settings: 系統設定")
 
     st.markdown("---")
-    st.markdown("#### ✈️ 旅遊專案切換")
+    st.markdown("#### :material/flight: 旅遊專案切換")
     
     trips = db.get_trips()
     trip_options = {t["trip_id"]: f"{t['trip_name']} ({t['base_currency']})" for t in trips}
@@ -184,11 +142,10 @@ with st.sidebar:
             st.session_state.info_msg = None
             st.rerun()
     else:
-        st.warning("⚠️ 尚未建立任何專案，請在下方建立第一個專案")
+        st.warning("尚未建立任何專案，請在下方建立", icon=":material/warning:")
         st.session_state.active_trip_id = None
 
-    # Expander to create a new trip project
-    with st.expander("➕ 建立新旅遊專案"):
+    with st.expander(":material/add_circle: 建立新旅遊專案"):
         with st.form("new_trip_form", clear_on_submit=True):
             new_name = st.text_input("旅遊專案名稱", placeholder="例如：2026東京大縱走")
             col_d1, col_d2 = st.columns(2)
@@ -202,9 +159,9 @@ with st.sidebar:
             submit_trip = st.form_submit_button("建立專案", use_container_width=True)
             if submit_trip:
                 if not new_name.strip():
-                    st.error("請輸入專案名稱！")
+                    st.error("請輸入專案名稱！", icon=":material/error:")
                 elif new_start > new_end:
-                    st.error("開始日期不能晚於結束日期！")
+                    st.error("開始日期不能晚於結束日期！", icon=":material/error:")
                 else:
                     new_trip = db.create_trip(
                         name=new_name,
@@ -214,14 +171,10 @@ with st.sidebar:
                         budget_twd=new_budget
                     )
                     st.session_state.active_trip_id = new_trip["trip_id"]
-                    st.success(f"✅ 專案 {new_name} 建立成功！")
+                    st.success(f"專案 {new_name} 建立成功！", icon=":material/check_circle:")
                     time.sleep(0.5)
                     st.rerun()
 
-    st.markdown("---")
-    st.markdown("#### 🔑 Gemini API 金鑰")
-    
-    # 從 Streamlit Secrets 讀取 API Key
     env_key = ""
     try:
         if "GEMINI_API_KEY" in st.secrets:
@@ -230,14 +183,15 @@ with st.sidebar:
         pass
 
     if env_key:
-        st.success("🔑 API Key 已由 Secrets/環境變數自動載入")
         st.session_state.api_key = env_key
     else:
+        st.markdown("---")
+        st.markdown("#### :material/vpn_key: 系統授權碼")
         api_key_input = st.text_input(
-            "輸入 Gemini API Key",
+            "輸入授權碼",
             type="password",
             value=st.session_state.api_key.strip(),
-            help="請輸入您的 Google Gemini API Key",
+            help="請輸入系統授權碼",
             label_visibility="collapsed",
         )
         if api_key_input.strip() != st.session_state.api_key.strip():
@@ -245,12 +199,12 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    st.markdown("#### 🌐 發票語系")
+    st.markdown("#### :material/language: 發票主要語系")
     lang_options = {
-        "🇯🇵 日文 (Japanese)": "japan",
-        "🇰🇷 韓文 (Korean)": "korean",
-        "🇬🇧 英文 (English)": "en",
-        "🇨🇳 中文 (Chinese)": "ch",
+        "日文 (Japanese)": "japan",
+        "韓文 (Korean)": "korean",
+        "英文 (English)": "en",
+        "中文 (Chinese)": "ch",
     }
     lang_choice = st.selectbox(
         "選擇發票主要語系",
@@ -260,32 +214,24 @@ with st.sidebar:
     )
     lang_code = lang_options[lang_choice]
 
-# ─────────────────────────────────────────────
-# Main Content Area
-# ─────────────────────────────────────────────
-st.title("🧾 AI 智能外幣發票理財系統")
+st.title(":material/account_balance: 智能外幣發票理財系統")
 
-# Get active trip doc
 active_trip = None
 if st.session_state.active_trip_id:
     active_trip = next((t for t in db.get_trips() if t["trip_id"] == st.session_state.active_trip_id), None)
 
 if active_trip:
-    st.markdown(f"📍 目前旅遊專案：**{active_trip['trip_name']}** (主要外幣: {active_trip['base_currency']} | 預算: NT$ {int(active_trip['budget_twd']):,})")
+    st.markdown(f":material/location_on: 目前旅遊專案：**{active_trip['trip_name']}** (主要外幣: {active_trip['base_currency']} | 預算: NT$ {int(active_trip['budget_twd']):,})")
 else:
-    st.markdown("📸 拍照上傳發票，AI 自動辨識、翻譯、分類，並換算台幣消費金額。")
+    st.markdown(":material/photo_camera: 拍照上傳發票，系統自動辨識、翻譯、分類，並換算台幣消費金額。")
 st.markdown("---")
 
 if not active_trip:
-    st.warning("👈 請先在側邊欄建立或選擇旅遊專案，即可開始記帳與辨識發票！")
+    st.warning("請先在側邊欄建立或選擇旅遊專案，即可開始記帳與辨識發票！", icon=":material/arrow_back:")
     st.stop()
 
-# ─────────────────────────────────────────────
-# Load Cumulative Trip Data (Always loaded first to populate UI)
-# ─────────────────────────────────────────────
 invoices = db.get_invoices(st.session_state.active_trip_id)
 
-# Recalculate stats
 total_foreign_accumulated = 0.0
 total_twd_accumulated = 0.0
 
@@ -296,7 +242,6 @@ for inv in invoices:
 
 remaining_budget = float(active_trip["budget_twd"]) - total_twd_accumulated
 
-# Flatten items for st.data_editor & Plotly Chart
 flat_items = []
 for inv in invoices:
     inv_id = inv["invoice_id"]
@@ -319,25 +264,22 @@ for inv in invoices:
 
 df_items_accumulated = pd.DataFrame(flat_items)
 
-# ─────────────────────────────────────────────
-# Metrics Cards (Unified at the Top)
-# ─────────────────────────────────────────────
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric(
-        label="📅 專案起訖日期",
+        label="專案起訖日期",
         value=f"{active_trip['start_date']} ~ {active_trip['end_date']}",
     )
 with col2:
     foreign_str = f"{total_foreign_accumulated:,.2f} {active_trip['base_currency']}"
-    st.metric(label="💴 累積外幣消費", value=foreign_str)
+    st.metric(label="累積外幣消費", value=foreign_str)
 with col3:
     st.metric(
-        label="🏦 累積台幣消費",
+        label="累積台幣消費",
         value=f"NT$ {int(total_twd_accumulated):,}"
     )
 with col4:
-    st.markdown('<p class="twd-label">🎯 預算剩餘額度</p>', unsafe_allow_html=True)
+    st.markdown('<p class="twd-label">預算剩餘額度</p>', unsafe_allow_html=True)
     color = "#E53E3E" if remaining_budget < 0 else "#38A169"
     st.markdown(
         f'<p class="twd-highlight" style="color: {color}">NT$ {int(remaining_budget):,}</p>',
@@ -346,22 +288,20 @@ with col4:
 
 st.markdown("---")
 
-# Show pipeline messages
 if st.session_state.error_msg:
-    st.error(st.session_state.error_msg)
+    st.error(st.session_state.error_msg, icon=":material/error:")
     st.session_state.error_msg = None
 if st.session_state.warning_msg:
-    st.warning(st.session_state.warning_msg)
+    st.warning(st.session_state.warning_msg, icon=":material/warning:")
+    st.session_state.warning_msg = None
 if st.session_state.info_msg:
-    st.info(st.session_state.info_msg)
+    st.info(st.session_state.info_msg, icon=":material/info:")
+    st.session_state.info_msg = None
 
-# ─────────────────────────────────────────────
-# Main Panel Layout: Split Pie Chart & Upload Box Side-by-Side (UI/UX Optimization)
-# ─────────────────────────────────────────────
 col_left, col_right = st.columns([11, 9])
 
 with col_left:
-    st.markdown("### 🥧 旅程消費分類比例加總")
+    st.markdown("### :material/pie_chart: 旅程消費分類比例")
     if not df_items_accumulated.empty:
         CATEGORY_COLORS = {
             "餐飲": "#FC8181",
@@ -384,7 +324,6 @@ with col_left:
             "其他": "#CBD5E0",
         }
 
-        # Aggregate by category
         pie_df = df_items_accumulated.groupby("category", as_index=False)["twd_subtotal"].sum()
         pie_df.columns = ["分類", "台幣金額"]
 
@@ -410,10 +349,10 @@ with col_left:
         )
         st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
     else:
-        st.info("ℹ️ 此專案目前尚無發票記錄，請在上傳區新增以產生圓餅圖！")
+        st.info("此專案目前尚無發票記錄，請在上傳區新增以產生圓餅圖。", icon=":material/info:")
 
 with col_right:
-    st.markdown("### 📤 上傳發票圖片")
+    st.markdown("### :material/cloud_upload: 上傳發票圖片")
     uploaded_file = st.file_uploader(
         "支援格式：JPG / PNG / WebP ｜ 最大 10 MB",
         type=["jpg", "jpeg", "png", "webp"],
@@ -425,14 +364,16 @@ with col_right:
     if uploaded_file is not None:
         st.image(
             uploaded_file,
-            caption=f"📎 已選擇發票 ｜ {uploaded_file.name}",
+            caption=f"已選擇發票 ｜ {uploaded_file.name}",
             width=200
         )
 
     has_api_key = bool(st.session_state.api_key.strip())
     is_disabled = (not has_api_key) or (uploaded_file is None) or st.session_state.processing
+    
+    btn_label = ":material/hourglass_empty: 處理中，請稍候..." if st.session_state.processing else ":material/search: 開始辨識"
     start_btn = st.button(
-        "🔍 開始辨識" if not st.session_state.processing else "⏳ 辨識中，請稍候...",
+        btn_label,
         disabled=is_disabled,
         type="primary",
         use_container_width=True,
@@ -445,17 +386,14 @@ with col_right:
         st.session_state.info_msg = None
         st.rerun()
 
-# ─────────────────────────────────────────────
-# Processing Pipeline Execution
-# ─────────────────────────────────────────────
 if st.session_state.processing and uploaded_file is not None:
     st.session_state.processing = False
     progress_bar = st.progress(0, text="準備開始...")
-    status_container = st.status("⏳ 正在處理發票...", expanded=True)
+    status_container = st.status("正在處理發票...", expanded=True)
 
     try:
-        status_container.update(label="🔍 正在預處理影像與辨識發票文字...", state="running")
-        progress_bar.progress(10, text="🔍 正在預處理影像與辨識發票文字...")
+        status_container.update(label="正在預處理影像與辨識發票文字...", state="running")
+        progress_bar.progress(10, text="正在預處理影像與辨識發票文字...")
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
@@ -469,13 +407,13 @@ if st.session_state.processing and uploaded_file is not None:
         except OSError:
             pass
 
-        progress_bar.progress(33, text="🔍 OCR 文字擷取完成")
+        progress_bar.progress(33, text="文字擷取完成")
 
         if not raw_texts:
-            raise ValueError("ERR-002: OCR 未擷取到任何文字")
+            raise ValueError("ERR-002")
 
-        status_container.update(label="🤖 AI 正在清洗雜訊、分析品項並翻譯...", state="running")
-        progress_bar.progress(40, text="🤖 AI 正在清洗雜訊、分析品項並翻譯...")
+        status_container.update(label="正在分析品項與整理資料...", state="running")
+        progress_bar.progress(40, text="正在分析品項與整理資料...")
 
         llm = LLMProcessor(api_key=st.session_state.api_key.strip())
 
@@ -483,16 +421,16 @@ if st.session_state.processing and uploaded_file is not None:
             result_dict = llm.process_ocr_texts(raw_texts)
         except ValueError as e:
             if "ERR-003" in str(e):
-                status_container.write("⚠️ JSON 解析失敗，正在重試...")
+                status_container.write("資料解析中，正在重試...")
                 time.sleep(1)
                 result_dict = llm.process_ocr_texts(raw_texts)
             else:
                 raise
 
-        progress_bar.progress(66, text="🤖 LLM 分析完成")
+        progress_bar.progress(66, text="智能分析完成")
 
-        status_container.update(label="💱 正在查詢歷史匯率並換算台幣...", state="running")
-        progress_bar.progress(70, text="💱 正在查詢歷史匯率並換算台幣...")
+        status_container.update(label="正在查詢歷史匯率並換算台幣...", state="running")
+        progress_bar.progress(70, text="正在查詢歷史匯率並換算台幣...")
 
         raw_date = result_dict.get("invoice_date", "")
         date_str = ""
@@ -504,11 +442,10 @@ if st.session_state.processing and uploaded_file is not None:
             except ValueError:
                 date_str = ""
         
-        # Date backtracking logic
         if not date_str:
             date_str = active_trip["start_date"]
             is_fallback_date = True
-            st.session_state.info_msg = "ℹ️ 無法識別發票日期，已採用旅遊首日匯率計算"
+            st.session_state.info_msg = "無法識別發票日期，已採用旅遊首日匯率計算"
 
         currency = (result_dict.get("currency") or active_trip["base_currency"]).strip().upper()
 
@@ -521,7 +458,7 @@ if st.session_state.processing and uploaded_file is not None:
 
         if is_fallback_rate:
             st.session_state.warning_msg = (
-                f"⚠️ ERR-005：yfinance 匯率查詢失敗，目前使用估算匯率 "
+                f"即時匯率查詢失敗，目前使用估算匯率 "
                 f"（1 {currency} ≈ {rate_val} TWD），數據僅供參考。"
             )
 
@@ -539,9 +476,8 @@ if st.session_state.processing and uploaded_file is not None:
         else:
             total_twd = 0
 
-        progress_bar.progress(100, text="✅ 處理完成！")
+        progress_bar.progress(100, text="處理完成！")
 
-        # Save to database
         items_list = df.to_dict(orient="records") if not df.empty else []
         invoice_doc = {
             "invoice_id": str(uuid.uuid4()),
@@ -556,45 +492,41 @@ if st.session_state.processing and uploaded_file is not None:
         }
         db.save_invoice(invoice_doc)
 
-        status_container.update(label="✅ 發票上傳並持久化保存成功！", state="complete")
+        status_container.update(label="資料已安全儲存！", state="complete")
         st.session_state.processing = False
         st.rerun()
 
     except Exception as e:
         err_msg = str(e)
         st.session_state.processing = False
-        status_container.update(label="❌ 處理失敗", state="error")
+        status_container.update(label="處理失敗", state="error")
 
         if "ERR-002" in err_msg:
             st.session_state.error_msg = (
-                "❌ ERR-002：OCR 無法提取任何文字。圖片可能過於模糊或角度不佳，請重新拍攝。"
+                "無法提取圖片中的文字。圖片可能過於模糊或角度不佳，請重新拍攝。"
             )
         elif "ERR-003" in err_msg:
             st.session_state.error_msg = (
-                "❌ ERR-003：AI 回傳的 JSON 格式損毀，已重試仍失敗。請稍後再試。"
+                "系統處理資料時發生異常，已重試仍失敗。請稍後再試。"
             )
         elif "ERR-004" in err_msg:
-            st.session_state.error_msg = f"❌ {err_msg}"
+            st.session_state.error_msg = f"系統發生錯誤：{err_msg}"
         else:
-            st.session_state.error_msg = f"❌ 系統發生未預期錯誤：{err_msg}"
+            st.session_state.error_msg = f"系統發生未預期錯誤：{err_msg}"
         st.rerun()
 
-# ─────────────────────────────────────────────
-# Cumulative Details Table & Save Section (Moved Neatly to the Bottom)
-# ─────────────────────────────────────────────
 if not df_items_accumulated.empty:
     st.markdown("---")
-    st.markdown("### 🛒 專案累積購買明細表格")
-    st.info("💡 雙擊任一欄位即可直接編輯修正，支援在底部直接點擊 ➕ 新增項目，或點擊左側 🗑️ 刪除。完成後請務必點擊下方 **💾 儲存變更** 按鈕！")
+    st.markdown("### :material/shopping_cart: 專案累積購買明細")
+    st.info("雙擊任一欄位即可直接編輯修正，支援在底部直接點擊新增項目，或選取左側刪除。完成後請務必點擊下方「儲存變更」按鈕。", icon=":material/lightbulb:")
 
-    # Use st.data_editor to edit items in place
     edited_df = st.data_editor(
         df_items_accumulated,
         width="stretch",
         column_config={
-            "invoice_id": None,      # Hide invoice UUID
-            "item_index": None,      # Hide index
-            "rate": None,            # Hide conversion rate
+            "invoice_id": None,
+            "item_index": None,
+            "rate": st.column_config.NumberColumn("當日匯率", format="%.4f"),
             "original_name": st.column_config.TextColumn("原始文字", width="medium"),
             "translated_name": st.column_config.TextColumn("品項翻譯", width="large"),
             "unit_price": st.column_config.NumberColumn("單價(外幣)", format="%.2f"),
@@ -617,13 +549,12 @@ if not df_items_accumulated.empty:
         key="cumulative_items_editor"
     )
 
-    # Database synchronization save button
     col_save, _ = st.columns([1, 4])
     with col_save:
-        save_btn = st.button("💾 儲存變更並更新資料庫", type="primary", use_container_width=True)
+        save_btn = st.button(":material/save: 儲存變更", type="primary", use_container_width=True)
 
     if save_btn:
-        with st.spinner("正在將變更儲存至資料庫..."):
+        with st.spinner("正在儲存變更..."):
             edited_invoices = {}
             new_rows = []
 
@@ -640,7 +571,6 @@ if not df_items_accumulated.empty:
                 
                 edited_invoices[inv_id].append(row_dict)
 
-            # Read all current invoices
             for inv in invoices:
                 inv_id = inv["invoice_id"]
                 rate = inv["exchange_rate"]
@@ -672,7 +602,6 @@ if not df_items_accumulated.empty:
 
                     db.update_invoice_items(inv_id, updated_items, new_foreign_total, new_twd_total)
 
-            # Manual additions
             if new_rows:
                 new_items_list = []
                 total_new_foreign = 0.0
@@ -709,13 +638,12 @@ if not df_items_accumulated.empty:
                 }
                 db.save_invoice(manual_invoice_doc)
 
-            st.success("✅ 雲端資料庫更新成功，所有變更已順利儲存！")
+            st.success("資料已順利儲存！", icon=":material/check_circle:")
             time.sleep(0.5)
             st.rerun()
 
-    # ── Export Section ──
     st.markdown("---")
-    st.markdown("### 💾 匯出專案帳目報告")
+    st.markdown("### :material/download: 匯出專案帳目報告")
 
     export_df = df_items_accumulated.rename(columns={
         "original_name":  "原始文字",
@@ -726,6 +654,7 @@ if not df_items_accumulated.empty:
         "category":       "分類",
         "twd_subtotal":   "台幣小計(NT$)",
         "invoice_date":   "消費日期",
+        "rate":           "當日匯率",
     })
 
     csv_bytes = export_df.to_csv(index=False).encode("utf-8-sig")
@@ -733,7 +662,7 @@ if not df_items_accumulated.empty:
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
         st.download_button(
-            label="⬇️ 下載專案累積 CSV（Excel 相容）",
+            label=":material/description: 下載專案明細 (CSV)",
             data=csv_bytes,
             file_name=f"trip_report_{active_trip['trip_name']}.csv",
             mime="text/csv",
@@ -748,7 +677,7 @@ if not df_items_accumulated.empty:
         }
         json_str = json.dumps(export_json, ensure_ascii=False, indent=2)
         st.download_button(
-            label="⬇️ 下載專案完整 JSON 資料",
+            label=":material/data_object: 下載完整資料 (JSON)",
             data=json_str,
             file_name=f"trip_report_{active_trip['trip_name']}.json",
             mime="application/json",

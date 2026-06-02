@@ -86,7 +86,7 @@ class LLMProcessor:
     負責：雜訊過濾、語境修正、繁體中文翻譯、分類歸納、結構化 JSON 輸出。
     """
 
-    def __init__(self, api_key: str = None, model_name: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: str = None, model_name: str = "gemini-1.5-flash"):
         """
         初始化 Gemini LLM。
         """
@@ -95,8 +95,8 @@ class LLMProcessor:
         if not resolved_key:
             raise ValueError("ERR-004: Gemini API Key 未提供")
 
-        # 💡 使用當前環境原生支援且效能最強大的預設模型
-        self.model_name = "gemini-2.5-flash"
+        # 💡 使用當前穩定的 Gemini 1.5 Flash 模型
+        self.model_name = "gemini-1.5-flash"
         
         genai.configure(api_key=resolved_key)
 

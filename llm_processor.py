@@ -3,7 +3,7 @@ import json
 import logging
 from typing import List, Dict, Any
 
-import google.generativeai as genai
+import google.genai as genai
 
 logger = logging.getLogger(__name__)
 
@@ -100,15 +100,17 @@ class LLMProcessor:
         
         genai.configure(api_key=resolved_key)
 
+        # 使用新 google-genai API，模型名稱需要 "models/" 前綴
         self.model = genai.GenerativeModel(
-            model_name=self.model_name,
-            generation_config={
-                "response_mime_type": "application/json",
-                "temperature": 0.1,          # 降低隨機性，確保結構化輸出穩定
-                "max_output_tokens": 8192,
-            },
+            model_name="models/gemini-1.5-flash",
+            system_instruction=SYSTEM_PROMPT,
+            generation_config=genai.types.GenerationConfig(
+                response_mime_type="application/json",
+                temperature=0.1,
+                max_output_tokens=8192,
+            ),
         )
-        logger.info(f"LLMProcessor initialized with forced model path: {self.model_name}")
+        logger.info(f"LLMProcessor initialized with Gemini 1.5 Flash model")
 
     def process_ocr_texts(self, ocr_texts: List[str]) -> Dict[str, Any]:
         """
@@ -119,18 +121,15 @@ class LLMProcessor:
         :raises ValueError: ERR-003（JSON 解析失敗）或 ERR-004（API 呼叫異常）
         """
         ocr_block = "\n".join(ocr_texts)
-        full_prompt = (
-            SYSTEM_PROMPT
-            + "\n\n以下是由 PaddleOCR 傳入的發票原始文字陣列，請依上述規則進行結構化：\n"
-            + ocr_block
-        )
+        # 系統提示已在模型初始化時設置，只需要提供 OCR 文本即可
+        user_prompt = "以下是由 PaddleOCR 傳入的發票原始文字陣列，請依上述規則進行結構化：\n" + ocr_block
 
         logger.info(
-            f"Sending {len(ocr_texts)} OCR text blocks to Gemini ({self.model_name})..."
+            f"Sending {len(ocr_texts)} OCR text blocks to Gemini 1.5 Flash..."
         )
         response_text = ""
         try:
-            response = self.model.generate_content(full_prompt)
+            response = self.model.generate_content(user_prompt)
             response_text = response.text
 
             # 清除可能殘留的 Markdown 標記（防禦性處理）

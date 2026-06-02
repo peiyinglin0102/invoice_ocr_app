@@ -592,7 +592,12 @@ if not df_items_accumulated.empty:
             "tax_flag": st.column_config.TextColumn("稅務標記", width="small"),
             "category": st.column_config.SelectboxColumn(
                 "分類",
-                options=["醫療保健", "藥妝", "零食/點心", "冷凍食品/冰品", "食品/飲料", "交通", "餐飲", "其他"],
+                options=[
+                    "餐飲", "超商/超市", "伴手禮/土特產", "零食/飲料", "藥妝/美妝", 
+                    "醫療保健", "服飾/鞋包", "精品/奢侈品", "動漫/玩具/周邊", 
+                    "居家/生活用品", "電子產品/3C", "交通", "住宿", "門票/娛樂", 
+                    "稅金/服務費", "免稅/折扣", "文具/書籍", "其他"
+                ],
                 width="medium"
             ),
             "invoice_date": st.column_config.TextColumn("發票日期", width="medium"),

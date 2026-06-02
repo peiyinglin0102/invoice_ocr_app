@@ -97,19 +97,39 @@ class LLMProcessor:
 
         # 💡 使用當前穩定的 Gemini 1.5 Flash 模型
         self.model_name = "gemini-1.5-flash"
-        
-        genai.configure(api_key=resolved_key)
+
+        # 兼容不同版本的 google-genai 用法：
+        # - 早期版本可能支援 genai.configure(api_key=...)
+        # - 新版可能需要 genai.Client(api_key=...)
+        # - 若皆無，則回退為設定環境變數 `GENAI_API_KEY`
+        client = None
+        try:
+          if hasattr(genai, "configure"):
+            genai.configure(api_key=resolved_key)
+          elif hasattr(genai, "Client"):
+            client = genai.Client(api_key=resolved_key)
+          else:
+            import os
+            os.environ["GENAI_API_KEY"] = resolved_key
+        except Exception as e:
+          logger.warning(f"Failed to auto-configure google-genai: {e}. Falling back to env var.")
+          import os
+          os.environ["GENAI_API_KEY"] = resolved_key
 
         # 使用新 google-genai API，模型名稱需要 "models/" 前綴
-        self.model = genai.GenerativeModel(
-            model_name="models/gemini-1.5-flash",
-            system_instruction=SYSTEM_PROMPT,
-            generation_config=genai.types.GenerationConfig(
-                response_mime_type="application/json",
-                temperature=0.1,
-                max_output_tokens=8192,
-            ),
-        )
+        model_kwargs = {
+          "model_name": "models/gemini-1.5-flash",
+          "system_instruction": SYSTEM_PROMPT,
+          "generation_config": genai.types.GenerationConfig(
+            response_mime_type="application/json",
+            temperature=0.1,
+            max_output_tokens=8192,
+          ),
+        }
+        if client is not None:
+          model_kwargs["client"] = client
+
+        self.model = genai.GenerativeModel(**model_kwargs)
         logger.info(f"LLMProcessor initialized with Gemini 1.5 Flash model")
 
     def process_ocr_texts(self, ocr_texts: List[str]) -> Dict[str, Any]:

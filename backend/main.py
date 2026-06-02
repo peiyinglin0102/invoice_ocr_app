@@ -80,13 +80,11 @@ async def process_invoice(
     """
     t0 = time.time()
 
-    # 讀取傳入金鑰，若為空或為特定預設/無效值則考慮從環境變數取得
+    # 讀取傳入金鑰
     resolved_api_key = (api_key or "").strip()
-    if not resolved_api_key or resolved_api_key == "undefined":
-        resolved_api_key = os.getenv("GEMINI_API_KEY", "").strip()
-
+    
     # ── 安全性：不接受 API key 為空 ──
-    if not resolved_api_key:
+    if not resolved_api_key or resolved_api_key == "undefined":
         raise HTTPException(status_code=400, detail="ERR-004: API Key 未提供")
 
     # ── ERR-001：格式驗證 ──

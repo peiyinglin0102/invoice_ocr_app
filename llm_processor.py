@@ -91,10 +91,7 @@ class LLMProcessor:
         初始化 Gemini LLM。
         """
         resolved_key = (api_key or "").strip()
-        if not resolved_key:
-            import os
-            resolved_key = os.getenv("GEMINI_API_KEY", "").strip()
-
+        
         if not resolved_key:
             raise ValueError("ERR-004: Gemini API Key 未提供")
 

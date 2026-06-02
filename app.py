@@ -224,10 +224,9 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("#### 🔑 Gemini API 金鑰")
     
-    # Check if API Key is already provided in environment variables or secrets
-    env_key = os.getenv("GEMINI_API_KEY", "").strip()
+    # 從 Streamlit Secrets 讀取 API Key
+    env_key = ""
     try:
-        import streamlit as st
         if "GEMINI_API_KEY" in st.secrets:
             env_key = st.secrets["GEMINI_API_KEY"].strip()
     except Exception:

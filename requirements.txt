@@ -1,7 +1,5 @@
 streamlit>=1.32.0
 opencv-python-headless>=4.9.0
-# Explicitly require headless to prevent paddleocr from installing opencv-python
---no-binary opencv-contrib-python
 paddleocr==2.8.1
 paddlepaddle==2.6.2
 numpy==1.26.4

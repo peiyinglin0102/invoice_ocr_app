@@ -620,13 +620,6 @@ export default function App() {
                   <button className="btn-export" onClick={exportCsv} aria-label="下載 CSV 報告">
                     <Download size={16} /> 下載 CSV（Excel 相容）
                   </button>
-                  <button className="btn-export" onClick={exportJson} aria-label="下載 JSON 報告">
-                    <Download size={16} /> 下載 JSON
-                  </button>
-                  <button className="btn-export" onClick={copyJson} aria-label="複製 JSON 至剪貼簿"
-                    style={{ gridColumn: '1 / -1' }}>
-                    <Copy size={16} /> 複製 JSON
-                  </button>
                 </div>
               </div>
             </div>

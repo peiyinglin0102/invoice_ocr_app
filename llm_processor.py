@@ -117,19 +117,129 @@ class LLMProcessor:
           os.environ["GENAI_API_KEY"] = resolved_key
 
         # 使用新 google-genai API，模型名稱需要 "models/" 前綴
-        model_kwargs = {
-          "model_name": "models/gemini-1.5-flash",
-          "system_instruction": SYSTEM_PROMPT,
-          "generation_config": genai.types.GenerationConfig(
-            response_mime_type="application/json",
-            temperature=0.1,
-            max_output_tokens=8192,
-          ),
-        }
-        if client is not None:
-          model_kwargs["client"] = client
+        model_name_full = "models/gemini-1.5-flash"
 
-        self.model = genai.GenerativeModel(**model_kwargs)
+        # 建立一個兼容層：GenaiModelWrapper
+        class GenaiModelWrapper:
+            def __init__(self, genai_mod, client_obj, model_name, system_instruction):
+                self.genai = genai_mod
+                self.client = client_obj
+                self.model_name = model_name
+                self.system_instruction = system_instruction
+
+                # 嘗試建立一個原生 model instance（若可用）
+                self.native_model = None
+                try:
+                    if hasattr(self.genai, "GenerativeModel"):
+                        gen_config = None
+                        if hasattr(self.genai, "types") and hasattr(self.genai.types, "GenerationConfig"):
+                            gen_config = self.genai.types.GenerationConfig(
+                                response_mime_type="application/json",
+                                temperature=0.1,
+                                max_output_tokens=8192,
+                            )
+                        kwargs = {"model_name": self.model_name, "system_instruction": self.system_instruction}
+                        if gen_config is not None:
+                            kwargs["generation_config"] = gen_config
+                        if client_obj is not None:
+                            kwargs["client"] = client_obj
+                        self.native_model = self.genai.GenerativeModel(**kwargs)
+                except Exception:
+                    self.native_model = None
+
+            def _unwrap_text(self, resp):
+                # normalize various response shapes to a simple object with .text
+                if resp is None:
+                    return ""
+                # dataclass-like or object with .text
+                if hasattr(resp, "text") and isinstance(resp.text, str):
+                    return resp.text
+                # object with 'candidates' or 'outputs'
+                if hasattr(resp, "candidates"):
+                    try:
+                        c = resp.candidates
+                        if isinstance(c, (list, tuple)) and len(c) > 0:
+                            first = c[0]
+                            # candidate may have 'content' or 'text'
+                            if hasattr(first, "content"):
+                                return first.content
+                            if hasattr(first, "text"):
+                                return first.text
+                    except Exception:
+                        pass
+                # dict-like
+                try:
+                    if isinstance(resp, dict):
+                        # common shapes
+                        if "candidates" in resp and isinstance(resp["candidates"], (list, tuple)) and len(resp["candidates"])>0:
+                            cand = resp["candidates"][0]
+                            if isinstance(cand, dict):
+                                return cand.get("content") or cand.get("text") or ""
+                        if "output" in resp and isinstance(resp["output"], str):
+                            return resp["output"]
+                        if "text" in resp and isinstance(resp["text"], str):
+                            return resp["text"]
+                except Exception:
+                    pass
+                # fallback to string conversion
+                try:
+                    return str(resp)
+                except Exception:
+                    return ""
+
+            def generate_content(self, prompt: str):
+                # 1) 原生 model（若存在）
+                if self.native_model is not None and hasattr(self.native_model, "generate_content"):
+                    try:
+                        return self.native_model.generate_content(prompt)
+                    except Exception:
+                        pass
+
+                # 2) client-level calls (嘗試多種可能的方法名)
+                c = self.client or self.genai
+                # 將 prompt 與 system_instruction 組成最小 payload
+                payload = {"prompt": prompt, "model": self.model_name}
+                # try generate_content
+                for method_name in ("generate_content", "generate", "generate_text", "text_generation", "generate_text_unified"):
+                    try:
+                        if hasattr(c, method_name):
+                            method = getattr(c, method_name)
+                            resp = None
+                            # 某些 API 接受 (model=..., prompt=...)
+                            try:
+                                resp = method(model=self.model_name, prompt=prompt)
+                            except TypeError:
+                                try:
+                                    resp = method(prompt)
+                                except Exception:
+                                    resp = method(payload)
+                            text = self._unwrap_text(resp)
+                            class R: pass
+                            r = R()
+                            r.text = text
+                            return r
+                    except Exception:
+                        continue
+
+                # 3) 最後嘗試直接呼叫 genai API 的任何可用入口，然後以字串回傳
+                try:
+                    resp = None
+                    if hasattr(self.genai, "generate"):
+                        resp = self.genai.generate(model=self.model_name, prompt=prompt)
+                    elif hasattr(self.genai, "generate_text"):
+                        resp = self.genai.generate_text(model=self.model_name, prompt=prompt)
+                    else:
+                        raise RuntimeError("No supported generate method found on google.genai module")
+                    text = self._unwrap_text(resp)
+                    class R: pass
+                    r = R()
+                    r.text = text
+                    return r
+                except Exception as e:
+                    raise RuntimeError(f"GenAI invocation failed: {e}") from e
+
+        # 建立 wrapper 實例供後續呼叫
+        self.model = GenaiModelWrapper(genai, client, model_name_full, SYSTEM_PROMPT)
         logger.info(f"LLMProcessor initialized with Gemini 1.5 Flash model")
 
     def process_ocr_texts(self, ocr_texts: List[str]) -> Dict[str, Any]:

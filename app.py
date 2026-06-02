@@ -175,6 +175,53 @@ with st.sidebar:
                     time.sleep(0.5)
                     st.rerun()
 
+    if st.session_state.active_trip_id:
+        current_trip = next((t for t in trips if t["trip_id"] == st.session_state.active_trip_id), None)
+        if current_trip:
+            with st.expander(":material/edit: 編輯或刪除目前專案"):
+                with st.form("edit_trip_form", clear_on_submit=False):
+                    edit_name = st.text_input("旅遊專案名稱", value=current_trip.get('trip_name', ''))
+                    col_e1, col_e2 = st.columns(2)
+                    with col_e1:
+                        try:
+                            from datetime import datetime
+                            start_val = datetime.strptime(current_trip.get('start_date', ''), "%Y-%m-%d").date()
+                        except:
+                            from datetime import datetime
+                            start_val = datetime.today().date()
+                        edit_start = st.date_input("開始日期", value=start_val)
+                    with col_e2:
+                        try:
+                            from datetime import datetime
+                            end_val = datetime.strptime(current_trip.get('end_date', ''), "%Y-%m-%d").date()
+                        except:
+                            from datetime import datetime
+                            end_val = datetime.today().date()
+                        edit_end = st.date_input("結束日期", value=end_val)
+                    
+                    submit_edit = st.form_submit_button("儲存變更", use_container_width=True)
+                    if submit_edit:
+                        if not edit_name.strip():
+                            st.error("請輸入專案名稱！", icon=":material/error:")
+                        elif edit_start > edit_end:
+                            st.error("開始日期不能晚於結束日期！", icon=":material/error:")
+                        else:
+                            db.update_trip(
+                                current_trip['trip_id'],
+                                edit_name,
+                                edit_start.strftime("%Y-%m-%d"),
+                                edit_end.strftime("%Y-%m-%d")
+                            )
+                            st.success("專案更新成功！", icon=":material/check_circle:")
+                            import time
+                            time.sleep(0.5)
+                            st.rerun()
+
+                if st.button("刪除此專案", type="secondary", use_container_width=True):
+                    db.delete_trip(current_trip['trip_id'])
+                    st.session_state.active_trip_id = None
+                    st.rerun()
+
     env_key = ""
     try:
         if "GEMINI_API_KEY" in st.secrets:
@@ -642,6 +689,29 @@ if not df_items_accumulated.empty:
             st.success("資料已順利儲存！", icon=":material/check_circle:")
             time.sleep(0.5)
             st.rerun()
+
+    st.markdown("---")
+    st.markdown("### :material/receipt_long: 發票管理")
+    with st.expander("管理或刪除已上傳的發票"):
+        if invoices:
+            for inv in invoices:
+                inv_id = inv["invoice_id"]
+                inv_date = inv.get("invoice_date", "未知日期")
+                total_twd = inv.get("total_twd", 0)
+                item_count = len(inv.get("purchase_details", []))
+                
+                col_i1, col_i2 = st.columns([4, 1])
+                with col_i1:
+                    st.write(f"**發票 ID:** {inv_id[:8]}... | **日期:** {inv_date} | **項目數:** {item_count} | **總台幣:** NT$ {int(total_twd):,}")
+                with col_i2:
+                    if st.button("刪除發票", key=f"del_inv_{inv_id}", use_container_width=True):
+                        db.delete_invoice(inv_id)
+                        st.success("發票已刪除")
+                        import time
+                        time.sleep(0.5)
+                        st.rerun()
+        else:
+            st.info("尚無發票記錄")
 
     st.markdown("---")
     st.markdown("### :material/download: 匯出專案帳目報告")

@@ -124,6 +124,59 @@ class DatabaseManager:
             self._write_local_db(data)
         return trip
 
+    def update_trip(self, trip_id: str, new_name: str, new_start_date: str, new_end_date: str) -> bool:
+        """更新旅遊專案"""
+        updated = False
+        if self.use_mongodb:
+            try:
+                result = self.db["trips"].update_one(
+                    {"trip_id": trip_id},
+                    {"$set": {
+                        "trip_name": new_name.strip(),
+                        "start_date": new_start_date.strip(),
+                        "end_date": new_end_date.strip()
+                    }}
+                )
+                if result.modified_count > 0:
+                    updated = True
+            except Exception as e:
+                logger.error(f"MongoDB error in update_trip: {e}")
+                updated = self._update_local_trip(trip_id, new_name, new_start_date, new_end_date)
+        else:
+            updated = self._update_local_trip(trip_id, new_name, new_start_date, new_end_date)
+        return updated
+
+    def _update_local_trip(self, trip_id: str, new_name: str, new_start_date: str, new_end_date: str) -> bool:
+        data = self._read_local_db()
+        for trip in data["trips"]:
+            if trip.get("trip_id") == trip_id:
+                trip["trip_name"] = new_name.strip()
+                trip["start_date"] = new_start_date.strip()
+                trip["end_date"] = new_end_date.strip()
+                self._write_local_db(data)
+                return True
+        return False
+
+    def delete_trip(self, trip_id: str) -> bool:
+        """刪除旅遊專案及其所有相關發票"""
+        if self.use_mongodb:
+            try:
+                self.db["trips"].delete_one({"trip_id": trip_id})
+                self.db["invoices"].delete_many({"trip_id": trip_id})
+                return True
+            except Exception as e:
+                logger.error(f"MongoDB error in delete_trip: {e}")
+                return self._delete_local_trip(trip_id)
+        else:
+            return self._delete_local_trip(trip_id)
+
+    def _delete_local_trip(self, trip_id: str) -> bool:
+        data = self._read_local_db()
+        data["trips"] = [t for t in data["trips"] if t.get("trip_id") != trip_id]
+        data["invoices"] = [inv for inv in data["invoices"] if inv.get("trip_id") != trip_id]
+        self._write_local_db(data)
+        return True
+
     # ─────────────────────────────────────────────
     # 發票明細 (Invoice) CRUD
     # ─────────────────────────────────────────────

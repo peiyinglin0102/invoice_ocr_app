@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
+
+# 💡 【核心大招】：在載入 cv2 之前，強迫 OpenCV 停用外部 X11/OpenGL 渲染，直接走離線/純記憶體模式
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
 import tempfile
-import cv2
+import cv2  # 🚀 加上上面的環境變數後，這行在雲端就不會再因為 libGL.so.1 而當機了！
 import numpy as np
 from paddleocr import PaddleOCR
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 class InvoiceOCREngine:
     """

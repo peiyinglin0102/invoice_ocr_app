@@ -1,64 +1,103 @@
-import yfinance as yf
+# -*- coding: utf-8 -*-
 import logging
 from datetime import datetime, timedelta
+from typing import Tuple
+
 import pandas as pd
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
+# 備援匯率（yfinance 完全失敗時使用，並觸發 ERR-005 警告）
+FALLBACK_RATES: dict[str, float] = {
+    "JPY": 0.212,
+    "USD": 31.5,
+    "KRW": 0.024,
+    "EUR": 33.8,
+    "GBP": 39.5,
+    "HKD": 4.03,
+    "SGD": 23.2,
+    "CNY": 4.35,
+}
+
+
 class FinanceUtils:
+    """
+    財務資料整合管線。
+    負責：從 yfinance 抓取指定日期的歷史匯率；失敗時自動切換備援估算值。
+    """
+
     @staticmethod
-    def get_historical_exchange_rate(currency_from: str, currency_to: str, target_date: str) -> float:
+    def get_historical_exchange_rate(
+        currency_from: str,
+        currency_to: str,
+        target_date: str,
+    ) -> Tuple[float, bool]:
         """
-        根據發票日期抓取特定的歷史匯率
-        :param currency_from: 原始幣別 (如 'JPY')
-        :param currency_to: 目標幣別 (如 'TWD')
-        :param target_date: 'YYYY-MM-DD'
-        :return: 匯率數值
+        查詢 currency_from → currency_to 在 target_date 當日的收盤匯率。
+
+        :param currency_from: 來源幣別 (e.g. 'JPY')
+        :param currency_to:   目標幣別 (e.g. 'TWD')
+        :param target_date:   消費日期字串 'YYYY-MM-DD'
+        :return: (匯率浮點數, 是否為備援值)
         """
-        if currency_from.upper() == currency_to.upper():
-            return 1.0
-            
-        ticker = f"{currency_from.upper()}{currency_to.upper()}=X"
+        currency_from = currency_from.strip().upper()
+        currency_to   = currency_to.strip().upper()
+
+        if currency_from == currency_to:
+            return 1.0, False
+
+        ticker = f"{currency_from}{currency_to}=X"
         logger.info(f"Fetching exchange rate for {ticker} on {target_date}...")
-        
+
         try:
-            # 轉換日期
-            date_obj = datetime.strptime(target_date, "%Y-%m-%d")
-            # yfinance 的儲存資料需要一個 range，所以我們結束日期設為目標的下一天
-            start_date = date_obj.strftime("%Y-%m-%d")
-            end_date = (date_obj + timedelta(days=5)).strftime("%Y-%m-%d") # 多抓幾天以防遇到假日
-            
-            data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-            
+            date_obj  = datetime.strptime(target_date, "%Y-%m-%d")
+            start_str = date_obj.strftime("%Y-%m-%d")
+            end_str   = (date_obj + timedelta(days=7)).strftime("%Y-%m-%d")
+
+            data = yf.download(ticker, start=start_str, end=end_str, progress=False, auto_adjust=True)
+
             if data.empty:
-                logger.warning(f"No exchange rate data found for {ticker} around {target_date}. Falling back to recent rate.")
-                # 若抓不到 (例如未來日期)，抓近 5 天
-                data = yf.download(ticker, period="5d", progress=False)
-                if data.empty:
-                    raise ValueError(f"Cannot fetch any data for {ticker}")
-            
-            # 取第一筆有效紀錄的 Close 價格
-            # yfinance 新版本回傳的常是 multi-index columns, 取得 [('Close', 'JPYTWD=X')] 或者取出第一個值
-            close_prices = data['Close']
-            if isinstance(close_prices, pd.DataFrame):
-                rate = close_prices.iloc[0, 0]
+                logger.warning(
+                    f"No data for {ticker} around {target_date}. "
+                    "Trying most recent 5 days..."
+                )
+                data = yf.download(ticker, period="5d", progress=False, auto_adjust=True)
+
+            if data.empty:
+                raise ValueError(f"yfinance returned empty DataFrame for {ticker}")
+
+            # Handle both single-index and multi-index columns
+            close = data["Close"]
+            if isinstance(close, pd.DataFrame):
+                rate_val = float(close.iloc[0, 0])
             else:
-                rate = close_prices.iloc[0]
-            
-            rate_val = float(rate)
-            logger.info(f"Exchange rate found: 1 {currency_from} = {rate_val} {currency_to}")
-            return rate_val
-            
+                rate_val = float(close.iloc[0])
+
+            if pd.isna(rate_val) or rate_val <= 0:
+                raise ValueError(f"Invalid rate value: {rate_val}")
+
+            logger.info(f"Exchange rate fetched: 1 {currency_from} = {rate_val:.6f} {currency_to}")
+            return rate_val, False
+
         except Exception as e:
-            logger.error(f"Error fetching exchange rate: {str(e)}")
-            # Fallback 預設日幣抓 0.21, 美金抓 31, 韓元 0.024 之類的 (實務上可以更精細)
-            fallback_rates = {"JPY": 0.212, "USD": 31.5, "KRW": 0.024}
-            if currency_from in fallback_rates:
-                logger.warning(f"Using fallback hardcoded rate for {currency_from}")
-                return fallback_rates[currency_from]
-            return 1.0 # 失敗時預設回傳 1 以免程式崩潰
+            logger.error(f"yfinance error for {ticker}: {e}")
+
+            # ERR-005: Fallback to hardcoded estimate
+            fallback = FALLBACK_RATES.get(currency_from)
+            if fallback is not None:
+                logger.warning(
+                    f"ERR-005: Using hardcoded fallback rate for {currency_from}: {fallback}"
+                )
+                return fallback, True
+
+            # Unknown currency: return 1.0 as last resort
+            logger.warning(
+                f"ERR-005: No fallback rate available for {currency_from}. Returning 1.0."
+            )
+            return 1.0, True
+
 
 if __name__ == "__main__":
-    # Test
-    rate = FinanceUtils.get_historical_exchange_rate("JPY", "TWD", "2023-06-24")
-    print("Test Rate:", rate)
+    rate, is_fb = FinanceUtils.get_historical_exchange_rate("JPY", "TWD", "2024-03-15")
+    print(f"Rate: {rate:.4f}  |  Fallback: {is_fb}")

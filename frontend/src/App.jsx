@@ -1,269 +1,613 @@
-import React, { useState, useRef } from 'react';
-import { UploadCloud, Loader2, FileText, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
+import {
+  UploadCloud, Loader2, FileText, CheckCircle,
+  AlertCircle, RefreshCw, Download, Copy, ChevronUp, ChevronDown,
+} from 'lucide-react';
+import Plot from 'react-plotly.js';
 
-function App() {
-  const [file, setFile] = useState(null);
-  const [provider, setProvider] = useState('Gemini');
-  const [apiKey, setApiKey] = useState('');
-  const [ocrLang, setOcrLang] = useState('japan');
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState(null);
-  const fileInputRef = useRef(null);
+// ─────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────
+const BACKEND_URL = 'http://localhost:8000';
 
-  const handleDragOver = (e) => {
-    e.preventDefault();
+const CATEGORY_COLORS = {
+  '醫療保健':     '#68D391',
+  '藥妝':         '#63B3ED',
+  '零食/點心':    '#F6AD55',
+  '冷凍食品/冰品':'#76E4F7',
+  '食品/飲料':    '#FC8181',
+  '交通':         '#B794F4',
+  '餐飲':         '#F687B3',
+  '其他':         '#CBD5E0',
+};
+
+const STAGES = [
+  { id: 1, label: '🔍 正在辨識發票文字...', from: 0,  to: 33  },
+  { id: 2, label: '🤖 AI 正在分析品項並翻譯...', from: 33, to: 66  },
+  { id: 3, label: '💱 正在查詢歷史匯率並換算...', from: 66, to: 100 },
+];
+
+const OCR_LANGS = [
+  { value: 'japan',  label: '🇯🇵 日文 (Japanese)' },
+  { value: 'korean', label: '🇰🇷 韓文 (Korean)' },
+  { value: 'en',     label: '🇬🇧 英文 (English)' },
+  { value: 'ch',     label: '🇨🇳 中文 (Chinese)' },
+];
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+function catBadgeStyle(category) {
+  const bg = CATEGORY_COLORS[category] || '#CBD5E0';
+  return {
+    backgroundColor: bg + '28',
+    color: bg,
+    border: `1px solid ${bg}66`,
   };
+}
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      setFile(e.dataTransfer.files[0]);
-    }
-  };
+function fmtNumber(n) {
+  return Number(n).toLocaleString('zh-TW');
+}
 
-  const processInvoice = async () => {
-    if (!file || !apiKey) {
-      setError("請確認已上傳圖片並輸入 API Key");
-      return;
-    }
-    
-    setIsProcessing(true);
-    setError(null);
-    setResult(null);
+// Build UTF-8 BOM CSV for Excel compatibility
+function buildCsv(items, currency) {
+  const BOM = '\uFEFF';
+  const headers = ['原始文字', '品項翻譯', `單價(${currency})`, '數量', '稅務標記', '分類', '台幣小計(NT$)'];
+  const rows = items.map(it => [
+    `"${(it.original_name  || '').replace(/"/g, '""')}"`,
+    `"${(it.translated_name|| '').replace(/"/g, '""')}"`,
+    it.unit_price,
+    it.quantity,
+    `"${it.tax_flag || '—'}"`,
+    `"${it.category || ''}"`,
+    it.twd_subtotal,
+  ].join(','));
+  return BOM + [headers.join(','), ...rows].join('\n');
+}
 
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('llm_provider', provider.toLowerCase());
-    formData.append('api_key', apiKey);
-    formData.append('ocr_lang', ocrLang);
+function downloadBlob(content, filename, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
-    try {
-      // Assuming backend runs on localhost:8000
-      const response = await fetch('http://localhost:8000/api/process_invoice', {
-        method: 'POST',
-        body: formData,
-      });
+// ─────────────────────────────────────────────
+// Sub-components
+// ─────────────────────────────────────────────
 
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.detail || "伺服器處理失敗");
-      }
-
-      const data = await response.json();
-      setResult(data.data);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const renderDashboard = () => {
-    if (!result) return null;
-    const { receipt_info, items } = result;
-    
-    // Process Data for Pie Chart
-    const categoryTotals = {};
-    items.forEach(item => {
-      const cat = item.category || '其他';
-      const twd = item.quantity * item.unit_price * receipt_info.exchange_rate;
-      if (!categoryTotals[cat]) categoryTotals[cat] = 0;
-      categoryTotals[cat] += twd;
-    });
-    
-    const chartData = Object.keys(categoryTotals).map(key => ({
-      name: key,
-      value: Math.round(categoryTotals[key])
-    }));
-    
-    const COLORS = ['#4F46E5', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
-
-    return (
-      <div className="glass-card" style={{ gridColumn: '1 / -1' }}>
-        <h2 className="card-title">
-          <FileText className="text-primary" /> 財務分析報告
-        </h2>
-        
-        <div className="metrics-grid">
-          <div className="metric-card">
-            <div className="metric-title">消費日期</div>
-            <div className="metric-value">{receipt_info.date}</div>
-          </div>
-          <div className="metric-card">
-            <div className="metric-title">外幣總額</div>
-            <div className="metric-value">{receipt_info.total_amount_foreign} {receipt_info.currency}</div>
-          </div>
-          <div className="metric-card">
-            <div className="metric-title">所用匯率</div>
-            <div className="metric-value">{receipt_info.exchange_rate.toFixed(4)}</div>
-          </div>
-          <div className="metric-card">
-            <div className="metric-title">總稅額 ({receipt_info.currency})</div>
-            <div className="metric-value" style={{ color: '#059669' }}>{receipt_info.tax_amount || 0}</div>
-          </div>
-          <div className="metric-card" style={{ borderColor: '#4F46E5', borderWidth: '2px' }}>
-            <div className="metric-title">台幣總花費</div>
-            <div className="metric-value metric-highlight">NT$ {Math.round(receipt_info.twd_total)}</div>
-          </div>
-        </div>
-
-        <div className="main-grid" style={{ gridTemplateColumns: '2fr 1fr' }}>
-          <div>
-            <h3 className="card-title" style={{ fontSize: '1.2rem', marginBottom: '1rem' }}>🛒 購買明細清單</h3>
-            <div className="data-table-container">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>品項翻譯</th>
-                    <th>單價 ({receipt_info.currency})</th>
-                    <th>數量</th>
-                    <th>稅務</th>
-                    <th>分類</th>
-                    <th>台幣小計</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((item, idx) => (
-                    <tr key={idx}>
-                      <td style={{ fontWeight: 500 }}>{item.translated_name}
-                        <div style={{ fontSize: '0.8rem', color: '#6B7280' }}>{item.original_name}</div>
-                      </td>
-                      <td>{item.unit_price}</td>
-                      <td>{item.quantity}</td>
-                      <td>
-                        <span className={item.tax_free ? "tax-free-badge" : "tax-inc-badge"}>
-                          {item.tax_free ? "免稅" : "含稅"}
-                        </span>
-                      </td>
-                      <td><span className="category-badge">{item.category}</span></td>
-                      <td style={{ fontWeight: 600, color: '#111827' }}>
-                        NT$ {Math.round(item.unit_price * item.quantity * receipt_info.exchange_rate)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-          
-          <div style={{ height: '400px' }}>
-             <h3 className="card-title" style={{ fontSize: '1.2rem', marginBottom: '1rem', textAlign: 'center' }}>📊 支出比例</h3>
-             <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={chartData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={5} dataKey="value">
-                  {chartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(value) => `NT$ ${value}`} />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
+/** Three-stage progress indicator */
+function ProgressPanel({ stage }) {
+  const pct = stage >= 3 ? 100 : stage === 2 ? 66 : stage === 1 ? 33 : 5;
   return (
-    <div className="app-container">
-      <header className="header">
-        <h1>AI 智能發票系統</h1>
-        <p>上傳多國發票，AI 自動翻譯品項、抓取匯率並完成記帳分析。</p>
-      </header>
-
-      <div className="main-grid">
-        {/* Sidebar settings */}
-        <div className="glass-card">
-          <h2 className="card-title">系統設定</h2>
-          
-          <div className="form-group">
-            <label className="form-label">大語言模型</label>
-            <select className="form-select" value={provider} onChange={e => setProvider(e.target.value)}>
-              <option value="Gemini">Google Gemini</option>
-              <option value="OpenAI">OpenAI GPT</option>
-            </select>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">API Key</label>
-            <input 
-              type="password" 
-              className="form-input" 
-              placeholder={`輸入您的 ${provider} API 金鑰`}
-              value={apiKey}
-              onChange={e => setApiKey(e.target.value)}
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">影像主要語系</label>
-            <select className="form-select" value={ocrLang} onChange={e => setOcrLang(e.target.value)}>
-              <option value="ch">繁體中文</option>
-              <option value="japan">日文</option>
-              <option value="korean">韓文</option>
-              <option value="en">英文</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Main Content */}
-        <div className="glass-card">
-          <h2 className="card-title">上傳發票</h2>
-          
-          <div 
-            className="upload-area" 
-            onDragOver={handleDragOver} 
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <UploadCloud className="upload-icon" />
-            <div>
-              <p style={{ fontWeight: 600, fontSize: '1.1rem' }}>點擊選擇圖片，或將圖片拖曳至此</p>
-              <p style={{ color: '#6B7280', fontSize: '0.9rem', marginTop: '0.5rem' }}>支援 JPG, PNG 格式</p>
+    <div className="progress-container" role="status" aria-live="polite">
+      <div className="progress-label">{STAGES[Math.min(stage, 2)].label}</div>
+      <div className="progress-bar-track">
+        <div className="progress-bar-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="stage-steps">
+        {STAGES.map((s, i) => {
+          const isDone   = stage > i;
+          const isActive = stage === i;
+          return (
+            <div key={s.id} className={`stage-step ${isDone ? 'done' : isActive ? 'active' : ''}`}>
+              <span className="stage-dot" />
+              {isDone ? '✓ ' : ''}{s.label}
             </div>
-            <input 
-              type="file" 
-              style={{ display: 'none' }} 
-              ref={fileInputRef} 
-              accept="image/*"
-              onChange={(e) => setFile(e.target.files[0])}
-            />
-          </div>
-          
-          {file && (
-            <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: '#F3F4F6', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <CheckCircle size={20} color="#10B981" />
-              <span style={{ fontWeight: 500 }}>已選擇檔案: {file.name}</span>
-            </div>
-          )}
-
-          {error && (
-            <div className="error-message">
-              <AlertCircle size={20} />
-              <span>{error}</span>
-            </div>
-          )}
-
-          <button 
-            className="btn-primary" 
-            onClick={processInvoice}
-            disabled={isProcessing || !file}
-          >
-            {isProcessing ? (
-              <><Loader2 className="spinner" /> AI 處理與解析中，請稍候...</>
-            ) : (
-              <><RefreshCw size={20} /> 開始全自動解析</>
-            )}
-          </button>
-        </div>
-        
-        {renderDashboard()}
+          );
+        })}
       </div>
     </div>
   );
 }
 
-export default App;
+/** Metric card */
+function MetricCard({ label, value, highlight }) {
+  return (
+    <div className={`metric-card${highlight ? ' twd-card' : ''}`}>
+      <div className="metric-label">{label}</div>
+      <div className={`metric-value${highlight ? ' twd-highlight' : ''}`}>{value}</div>
+    </div>
+  );
+}
+
+/** Sortable data table */
+function ItemsTable({ items, currency }) {
+  const [sortKey, setSortKey] = useState(null);
+  const [sortDir, setSortDir] = useState('asc');
+
+  const toggleSort = (key) => {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  };
+
+  const sorted = useMemo(() => {
+    if (!sortKey) return items;
+    return [...items].sort((a, b) => {
+      const av = a[sortKey], bv = b[sortKey];
+      if (typeof av === 'number') return sortDir === 'asc' ? av - bv : bv - av;
+      return sortDir === 'asc'
+        ? String(av).localeCompare(String(bv), 'zh-TW')
+        : String(bv).localeCompare(String(av), 'zh-TW');
+    });
+  }, [items, sortKey, sortDir]);
+
+  const SortIcon = ({ col }) => {
+    if (sortKey !== col) return <ChevronUp size={12} style={{ opacity: 0.3 }} />;
+    return sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />;
+  };
+
+  const cols = [
+    { key: 'translated_name', label: '品項翻譯' },
+    { key: 'unit_price',      label: `單價(${currency})` },
+    { key: 'quantity',        label: '數量' },
+    { key: 'tax_flag',        label: '稅務標記' },
+    { key: 'category',        label: '分類' },
+    { key: 'twd_subtotal',    label: '台幣小計' },
+  ];
+
+  return (
+    <div className="table-wrapper" tabIndex={0} aria-label="購買明細表格">
+      <table className="data-table">
+        <thead>
+          <tr>
+            {cols.map(c => (
+              <th
+                key={c.key}
+                onClick={() => toggleSort(c.key)}
+                aria-sort={sortKey === c.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                tabIndex={0}
+                onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && toggleSort(c.key)}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  {c.label} <SortIcon col={c.key} />
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((item, idx) => (
+            <tr key={idx}>
+              <td>
+                <span style={{ fontWeight: 600 }}>{item.translated_name}</span>
+                {item.original_name && (
+                  <div className="original-name-sub">{item.original_name}</div>
+                )}
+              </td>
+              <td>{fmtNumber(item.unit_price)}</td>
+              <td>{item.quantity}</td>
+              <td>
+                {item.tax_flag
+                  ? <span className="tax-badge">{item.tax_flag}</span>
+                  : <span className="tax-none">—</span>
+                }
+              </td>
+              <td>
+                <span className="cat-badge" style={catBadgeStyle(item.category)}>
+                  {item.category}
+                </span>
+              </td>
+              <td className="twd-subtotal">NT$ {fmtNumber(item.twd_subtotal)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Plotly pie chart */
+function CategoryPie({ items }) {
+  const agg = useMemo(() => {
+    const totals = {};
+    items.forEach(it => {
+      const cat = it.category || '其他';
+      totals[cat] = (totals[cat] || 0) + it.twd_subtotal;
+    });
+    return totals;
+  }, [items]);
+
+  const labels  = Object.keys(agg);
+  const values  = Object.values(agg);
+  const colors  = labels.map(l => CATEGORY_COLORS[l] || '#CBD5E0');
+
+  return (
+    <div className="chart-container" aria-label="本次消費分類比例圓餅圖">
+      <Plot
+        data={[{
+          type: 'pie',
+          labels,
+          values,
+          marker: { colors },
+          textinfo: 'percent+label',
+          textposition: 'inside',
+          hovertemplate: '<b>%{label}</b><br>金額：NT$ %{value:,}<br>佔比：%{percent}<extra></extra>',
+          sort: false,
+        }]}
+        layout={{
+          title: { text: '本次消費分類比例', font: { color: '#E2E8F0', family: 'Outfit', size: 16 } },
+          paper_bgcolor: 'transparent',
+          plot_bgcolor:  'transparent',
+          font: { color: '#A0AEC0', family: 'Inter' },
+          legend: {
+            orientation: 'v',
+            yanchor: 'top',
+            y: 1,
+            xanchor: 'left',
+            x: 1.02,
+            font: { color: '#CBD5E0' },
+          },
+          margin: { l: 10, r: 160, t: 50, b: 10 },
+          showlegend: true,
+        }}
+        config={{ scrollZoom: false, displayModeBar: false, responsive: true }}
+        style={{ width: '100%', height: '100%' }}
+        useResizeHandler
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Main App
+// ─────────────────────────────────────────────
+export default function App() {
+  const [apiKey,       setApiKey]       = useState('');
+  const [ocrLang,      setOcrLang]      = useState('japan');
+  const [file,         setFile]         = useState(null);
+  const [previewUrl,   setPreviewUrl]   = useState(null);
+  const [dragActive,   setDragActive]   = useState(false);
+  const [stage,        setStage]        = useState(-1);   // -1=idle, 0/1/2=processing stages
+  const [result,       setResult]       = useState(null);
+  const [error,        setError]        = useState(null);
+  const [warning,      setWarning]      = useState(null);
+  const fileInputRef = useRef(null);
+
+  const isProcessing = stage >= 0;
+  const canStart     = apiKey.trim() && file && !isProcessing;
+
+  // ── File Handling ──
+  const applyFile = useCallback((f) => {
+    if (!f) return;
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(f.type)) {
+      setError('ERR-001：不支援的檔案格式，請上傳 JPG、PNG 或 WebP。');
+      return;
+    }
+    if (f.size > 10 * 1024 * 1024) {
+      setError('ERR-001：檔案大小超過 10MB 上限，請壓縮後重新上傳。');
+      return;
+    }
+    setError(null);
+    setResult(null);
+    setWarning(null);
+    setFile(f);
+    setPreviewUrl(URL.createObjectURL(f));
+  }, []);
+
+  const handleDragOver  = (e) => { e.preventDefault(); setDragActive(true); };
+  const handleDragLeave = ()  => setDragActive(false);
+  const handleDrop      = (e) => {
+    e.preventDefault();
+    setDragActive(false);
+    if (e.dataTransfer.files?.[0]) applyFile(e.dataTransfer.files[0]);
+  };
+  const handleFileChange = (e) => {
+    if (e.target.files?.[0]) applyFile(e.target.files[0]);
+  };
+
+  // Context menu prevention (long-press on mobile)
+  const handleContextMenu = (e) => e.preventDefault();
+
+  // ── Process Invoice ──
+  const processInvoice = async () => {
+    if (!canStart) return;
+    setError(null);
+    setWarning(null);
+    setResult(null);
+    setStage(0);
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('api_key', apiKey.trim());
+    formData.append('ocr_lang', ocrLang);
+
+    try {
+      // Simulate stage transitions for UX
+      await delay(300);
+      setStage(1);   // LLM stage
+
+      const res = await fetch(`${BACKEND_URL}/api/process_invoice`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      setStage(2);   // Finance stage
+      await delay(200);
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        const detail  = errJson.detail || `HTTP ${res.status}`;
+        throw new Error(detail);
+      }
+
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error_message || '處理失敗');
+
+      if (json.data.is_fallback_rate) {
+        setWarning(
+          `⚠️ ERR-005：yfinance 匯率查詢失敗，目前使用估算匯率（1 ${json.data.currency} ≈ ${json.data.exchange_rate.toFixed(4)} TWD），數據僅供參考。`
+        );
+      }
+
+      setResult(json.data);
+      setStage(-1);
+    } catch (err) {
+      setStage(-1);
+      const msg = err.message || '未知錯誤';
+      if (msg.includes('ERR-004') || msg.includes('API') || msg.includes('401')) {
+        setError(`❌ ERR-004：Gemini API 驗證失敗，請確認 API Key 是否正確。`);
+      } else if (msg.includes('ERR-003')) {
+        setError(`❌ ERR-003：AI 回傳的 JSON 格式損毀，已重試仍失敗，請稍後再試。`);
+      } else if (msg.includes('ERR-002')) {
+        setError(`❌ ERR-002：OCR 無法提取任何文字，圖片可能過於模糊，請重新拍攝。`);
+      } else if (msg.includes('ERR-001')) {
+        setError(`❌ ERR-001：${msg}`);
+      } else if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        setError(`❌ 無法連線至後端伺服器（localhost:8000），請確認 FastAPI 服務已啟動。`);
+      } else {
+        setError(`❌ 系統錯誤：${msg}`);
+      }
+    }
+  };
+
+  const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // ── Export ──
+  const exportCsv = () => {
+    if (!result) return;
+    const csv = buildCsv(result.items, result.currency);
+    downloadBlob(csv, `invoice_${result.invoice_date}.csv`, 'text/csv;charset=utf-8');
+  };
+
+  const exportJson = () => {
+    if (!result) return;
+    const payload = JSON.stringify(result, null, 2);
+    downloadBlob(payload, `invoice_${result.invoice_date}.json`, 'application/json');
+  };
+
+  const copyJson = async () => {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(result, null, 2));
+    } catch {/* ignore */}
+  };
+
+  // ─────────────────────────────────────────
+  return (
+    <div className="app-container">
+      {/* ── Header ── */}
+      <header className="app-header">
+        <h1>🧾 AI 智能外幣發票理財系統</h1>
+        <p>拍照上傳發票，AI 自動辨識、翻譯、分類，即時換算台幣消費金額。</p>
+      </header>
+
+      <div className="layout-grid">
+        {/* ══ SIDEBAR ══ */}
+        <aside className="sidebar">
+          <div className="glass-card">
+            <h2 className="card-title">⚙️ 系統設定</h2>
+
+            {/* API Key */}
+            <div className="form-group">
+              <label className="form-label" htmlFor="api-key-input">Gemini API Key</label>
+              <input
+                id="api-key-input"
+                type="password"
+                className="form-input"
+                placeholder="輸入您的 Gemini API 金鑰"
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                aria-describedby="api-key-status"
+                autoComplete="off"
+              />
+              <div id="api-key-status" className={`api-key-status ${apiKey.trim() ? 'set' : 'unset'}`}>
+                {apiKey.trim()
+                  ? <><CheckCircle size={14} /> API Key 已設定（遮罩顯示）</>
+                  : <><AlertCircle size={14} /> 尚未設定 API Key</>
+                }
+              </div>
+            </div>
+
+            {/* OCR Language */}
+            <div className="form-group">
+              <label className="form-label" htmlFor="ocr-lang-select">發票主要語系</label>
+              <select
+                id="ocr-lang-select"
+                className="form-select"
+                value={ocrLang}
+                onChange={e => setOcrLang(e.target.value)}
+              >
+                {OCR_LANGS.map(l => (
+                  <option key={l.value} value={l.value}>{l.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Usage guide */}
+            <div style={{ marginTop: '0.5rem' }}>
+              <p className="form-label" style={{ marginBottom: '0.75rem' }}>📋 使用說明</p>
+              <ol className="usage-guide">
+                {['輸入 Gemini API Key', '選擇發票語系', '上傳發票圖片', '點擊「開始辨識」', '查看分析報告並匯出'].map((txt, i) => (
+                  <li key={i}>
+                    <span className="step-num">{i + 1}</span>
+                    <span>{txt}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        </aside>
+
+        {/* ══ MAIN PANEL ══ */}
+        <main>
+          <div className="glass-card">
+            <h2 className="card-title">📤 上傳發票圖片</h2>
+
+            {/* Upload Zone */}
+            <div
+              id="upload-zone"
+              className={`upload-zone${dragActive ? ' drag-active' : ''}`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onContextMenu={handleContextMenu}
+              role="button"
+              tabIndex={0}
+              aria-label="上傳發票圖片，點擊或拖曳圖片至此"
+              onKeyDown={e => {
+                if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
+              }}
+            >
+              <UploadCloud className="upload-zone-icon" aria-hidden="true" />
+              <p className="main-text">點擊選擇或拖曳圖片至此</p>
+              <p className="sub-text">支援 JPG / PNG / WebP｜最大 10 MB｜行動裝置可直接拍照</p>
+
+              {/* Hidden input — covers entire zone for touch; iOS camera support via accept + capture */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                capture="environment"
+                onChange={handleFileChange}
+                aria-label="選擇發票圖片"
+                tabIndex={-1}
+              />
+            </div>
+
+            {/* Preview */}
+            {previewUrl && file && (
+              <div className="preview-box">
+                <img src={previewUrl} alt="已上傳發票預覽" />
+                <div className="preview-info">
+                  <CheckCircle size={14} color="#68D391" />
+                  <span>{file.name}（{(file.size / 1024).toFixed(1)} KB）</span>
+                </div>
+              </div>
+            )}
+
+            {/* Alerts */}
+            {error && (
+              <div className="alert alert-error" role="alert" style={{ marginTop: '1rem', fontSize: 14 }}>
+                <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                <span>{error}</span>
+              </div>
+            )}
+            {warning && (
+              <div className="alert alert-warning" role="status" style={{ marginTop: '1rem' }}>
+                <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                <span>{warning}</span>
+              </div>
+            )}
+
+            {/* Action Button */}
+            <button
+              className="btn-primary"
+              id="start-btn"
+              onClick={processInvoice}
+              disabled={!canStart}
+              aria-busy={isProcessing}
+              aria-label={isProcessing ? '辨識處理中，請稍候' : '開始辨識發票'}
+            >
+              {isProcessing
+                ? <><Loader2 size={18} className="spinner" /> 辨識中，請稍候...</>
+                : <><RefreshCw size={18} /> 🔍 開始辨識</>
+              }
+            </button>
+
+            {/* Progress */}
+            {isProcessing && <ProgressPanel stage={stage} />}
+
+            {/* Success flash */}
+            {result && !isProcessing && (
+              <div className="alert alert-success" role="status" style={{ marginTop: '1rem' }}>
+                <CheckCircle size={16} style={{ flexShrink: 0 }} />
+                <span>✅ 發票辨識與分析已完成！請查看下方財務報告。</span>
+              </div>
+            )}
+          </div>
+
+          {/* ══ RESULTS SECTION ══ */}
+          {result && (
+            <div className="results-section" style={{ marginTop: '1.75rem' }}>
+
+              {/* Financial Report Card */}
+              <div className="glass-card">
+                <h2 className="card-title"><FileText size={20} /> 📊 財務分析報告</h2>
+
+                {/* Metrics — 4 columns */}
+                <div className="metrics-grid">
+                  <MetricCard
+                    label="📅 消費日期"
+                    value={result.invoice_date || '—'}
+                  />
+                  <MetricCard
+                    label="💴 外幣總額"
+                    value={`${fmtNumber(result.total_foreign_amount)} ${result.currency}`}
+                  />
+                  <MetricCard
+                    label="📈 適用匯率"
+                    value={result.exchange_rate.toFixed(4)}
+                  />
+                  <MetricCard
+                    label="🏦 台幣總花費"
+                    value={`NT$ ${fmtNumber(result.total_twd)}`}
+                    highlight
+                  />
+                </div>
+              </div>
+
+              {/* Items Table */}
+              <div className="glass-card">
+                <h2 className="card-title">🛒 購買明細表格</h2>
+                <ItemsTable items={result.items} currency={result.currency} />
+              </div>
+
+              {/* Pie Chart */}
+              <div className="glass-card">
+                <h2 className="card-title">🥧 本次消費分類比例</h2>
+                <CategoryPie items={result.items} />
+              </div>
+
+              {/* Export */}
+              <div className="glass-card">
+                <h2 className="card-title">💾 匯出報告</h2>
+                <div className="export-grid">
+                  <button className="btn-export" onClick={exportCsv} aria-label="下載 CSV 報告">
+                    <Download size={16} /> 下載 CSV（Excel 相容）
+                  </button>
+                  <button className="btn-export" onClick={exportJson} aria-label="下載 JSON 報告">
+                    <Download size={16} /> 下載 JSON
+                  </button>
+                  <button className="btn-export" onClick={copyJson} aria-label="複製 JSON 至剪貼簿"
+                    style={{ gridColumn: '1 / -1' }}>
+                    <Copy size={16} /> 複製 JSON
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}

@@ -246,10 +246,10 @@ function CategoryPie({ items }) {
           sort: false,
         }]}
         layout={{
-          title: { text: '本次消費分類比例', font: { color: '#E2E8F0', family: 'Outfit', size: 16 } },
+          title: { text: '本次消費分類比例', font: { color: '#E2E8F0', family: 'Outfit, Noto Sans TC, Noto Sans KR, Noto Sans JP, sans-serif', size: 16 } },
           paper_bgcolor: 'transparent',
           plot_bgcolor:  'transparent',
-          font: { color: '#A0AEC0', family: 'Inter' },
+          font: { color: '#A0AEC0', family: 'Inter, Noto Sans TC, Noto Sans KR, Noto Sans JP, sans-serif' },
           legend: {
             orientation: 'v',
             yanchor: 'top',

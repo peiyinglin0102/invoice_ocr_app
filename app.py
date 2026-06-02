@@ -346,6 +346,7 @@ with col_left:
         fig.update_layout(
             legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5),
             margin=dict(l=0, r=0, t=10, b=40),
+            font=dict(family="Inter, Noto Sans TC, Noto Sans KR, Noto Sans JP, sans-serif")
         )
         st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
     else:
